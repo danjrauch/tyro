@@ -6,23 +6,23 @@
             [net.async.tcp :refer [event-loop connect accept]]
             [clojure.edn :as edn]
             [tyro.index :as ind]
-            [tyro.peer :as peer]))
+            [tyro.peer :as peer]
+            [tyro.repl :as repl]))
 
 (def cli-options
-  ;; An option with a required argument
   [["-p" "--port PORT" "Port number"
     :default 80
     :parse-fn #(Integer/parseInt %)
     :validate [#(< 0 % 0x10000) "Must be a number between 0 and 65536"]]
    ["-d" "--dir DIR" "File directory"
-    :default "."
+    ; :default "."
     :parse-fn #(String. %)]
    ;; A non-idempotent option (:default is applied first)
+   [nil "--repl" "REPL Mode for Peer"]
    ["-v" nil "Verbosity level"
     :id :verbosity
     :default 0
-    :update-fn inc] ; Prior to 0.4.1, you would have to use:
-                   ;; :assoc-fn (fn [m k _] (update-in m [k] inc))
+    :update-fn inc]
    ;; A boolean option defaulting to nil
    ["-h" "--help"]])
 
@@ -32,7 +32,7 @@
   [executor port & args]
   (let [exec-chan (chan (dropping-buffer 100))]
 
-    (thread (executor exec-chan args))
+    (thread (executor exec-chan (flatten args)))
 
     (let [acceptor (accept (event-loop) {:port port})]
       (logging/info "SERVER RUNNING")
@@ -55,29 +55,32 @@
 (defn -main
   [& args]
   (let [opts (parse-opts args cli-options)]
-
-    (when (opts :errors)
-      (logging/error (first (opts :errors)))
+    (when (:errors opts)
+      (logging/error (first (:errors opts)))
       (System/exit 0))
 
-    (when (not (contains? (opts :options) :port))
+    (when (not (contains? (:options opts) :port))
       (logging/error "Provide a value for the option \"--port\".")
       (System/exit 0))
 
-    (when (not= (count (opts :arguments)) 1)
+    (when (not= (count (:arguments opts)) 1)
       (logging/error "Provide only one arguemnt of either \"index\" or \"peer\".")
       (System/exit 0))
 
-    (when (and (= (first (opts :arguments)) "peer")
-               (not (contains? (opts :options) :dir)))
+    (when (and (= (first (:arguments opts)) "peer")
+               (not (contains? (:options opts) :dir)))
       (logging/error "Provide a value for the option \"--dir\" for argument \"peer\".")
       (System/exit 0))
 
-    (let [node-type (first (opts :arguments))
-          port (:port (opts :options))
-          dir (:dir (opts :options))]
+    (let [node-type (first (:arguments opts))
+          port (:port (:options opts))
+          dir (:dir (:options opts))]
       (case node-type
         "index" (start-server ind/execute port)
         "peer" (do
-                 (thread (peer/execute-shadow-client))
-                 (start-server peer/execute port dir))))))
+                 (dosync (ref-set peer/dir dir))
+                 (if (= (:repl (:options opts)) true)
+                   (do
+                     (thread (start-server peer/execute port dir))
+                     (repl/start-repl))
+                   (start-server peer/execute port dir)))))))

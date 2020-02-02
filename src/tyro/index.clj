@@ -10,12 +10,12 @@
    (let [{:keys [p2f-index endpoint-index] {:keys [host port write-chan]} :msg} client-bindings
          id-creator (fnil inc 0)
          peer-id (id-creator (first (sort > (keys @p2f-index))))]
-     (alter p2f-index assoc peer-id [])
+     (alter p2f-index assoc peer-id #{})
      (alter endpoint-index assoc peer-id {:host host
                                           :port port})
-     (let [msg (assoc (:msg client-bindings) :peer-id peer-id)
+     (let [msg (assoc (:msg client-bindings) :peer-id peer-id :success true)
            msg (dissoc msg :write-chan)]
-       (>!! write-chan (.getBytes (prn-str msg))))
+       (go (>! write-chan (.getBytes (prn-str msg)))))
      (str "REGISTERED PEER " host " on port " port " with ID: " peer-id))))
 
 (defn handle-register
@@ -23,11 +23,14 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name]} :msg} client-bindings]
+   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (when (not (contains? @f2p-index file-name))
        (alter f2p-index assoc file-name #{}))
      (alter f2p-index update file-name conj peer-id)
      (alter p2f-index update peer-id conj file-name)
+     (let [msg (assoc (:msg client-bindings) :success true)
+           msg (dissoc msg :write-chan)]
+       (go (>! write-chan (.getBytes (prn-str msg)))))
      (str "REGISTERED FILE " file-name " for ID: " peer-id))))
 
 (defn handle-deregister
@@ -35,9 +38,12 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name]} :msg} client-bindings]
+   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (alter f2p-index update file-name disj peer-id)
      (alter p2f-index update peer-id disj file-name)
+     (let [msg (assoc (:msg client-bindings) :success true)
+           msg (dissoc msg :write-chan)]
+       (go (>! write-chan (.getBytes (prn-str msg)))))
      (str "DEREGISTERED FILE " file-name " for ID: " peer-id))))
 
 (defn handle-search
@@ -46,9 +52,9 @@
   [client-bindings]
   (let [{:keys [f2p-index endpoint-index] {:keys [file-name write-chan]} :msg} client-bindings
         results (vec (map #(get @endpoint-index %) (get @f2p-index file-name)))]
-    (let [msg (assoc (:msg client-bindings) :endpoints results)
+    (let [msg (assoc (:msg client-bindings) :endpoints results :success true)
           msg (dissoc msg :write-chan)]
-      (>!! write-chan (.getBytes (prn-str msg))))
+      (go (>! write-chan (.getBytes (prn-str msg)))))
     (str "RETURNED RESULTS for file " file-name " to client")))
 
 (defn execute
