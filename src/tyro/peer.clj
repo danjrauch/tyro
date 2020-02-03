@@ -3,14 +3,14 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [clojure.tools.logging :as logging]
-            [net.async.tcp :refer [event-loop connect accept]]))
+            [net.async.tcp :refer [event-loop connect accept]]
+            [taoensso.timbre :as timbre
+             :refer [log  trace  debug  info  warn  error  fatal  report
+                     logf tracef debugf infof warnf errorf fatalf reportf
+                     spy get-env]]))
 
 (def dir (ref ""))
-; TODO implement a 'set index' function
-(def channel-map (ref {:index {:host "127.0.0.1"
-                               :port 8715
-                               :ch (chan (dropping-buffer 100))}}))
+(def channel-map (ref {}))
 
 (defn connect-and-collect
   [host port message-ch]
@@ -40,43 +40,64 @@
             (recur (conj results response) (inc i)))))
       [{:type -1 :connection-error true :host host :port port}])))
 
+(defn set-index
+  "Set the endpoint of the index.
+   If an index was already set, execute requests in the channel and return them."
+  {:added "0.1.0"}
+  [host port]
+  (if (contains? @channel-map :index)
+    (let [info (:index @channel-map)
+          results (connect-and-collect (:host info) (:port info) (:ch info))]
+      results)
+    (dosync
+     (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
+     [])))
+
 (defn registry
   "Register yourself as a peer."
   {:added "0.1.0"}
   [host port]
-  (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port}))
+  (if (contains? @channel-map :index)
+    (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port})
+    false))
 
 (defn register
-  "Register a file."
+  "Register a file with the index."
   {:added "0.1.0"}
   [peer-id file-name]
-  (>!! (:ch (:index @channel-map)) {:type 1 :peer-id peer-id :file-name file-name}))
+  (if (contains? @channel-map :index)
+    (>!! (:ch (:index @channel-map)) {:type 1 :peer-id peer-id :file-name file-name})
+    false))
 
 (defn deregister
-  "Deregister a file."
+  "Deregister a file with the index."
   {:added "0.1.0"}
   [peer-id file-name]
-  (>!! (:ch (:index @channel-map)) {:type 2 :peer-id peer-id :file-name file-name}))
+  (if (contains? @channel-map :index)
+    (>!! (:ch (:index @channel-map)) {:type 2 :peer-id peer-id :file-name file-name})
+    false))
 
 (defn search
-  "Search for a list of viable peers."
+  "Search for a list of viable peers that have a certain file."
   {:added "0.1.0"}
   [file-name]
-  (>!! (:ch (:index @channel-map)) {:type 3 :file-name file-name}))
+  (if (contains? @channel-map :index)
+    (>!! (:ch (:index @channel-map)) {:type 3 :file-name file-name})
+    false))
 
 (defn retrieve
   "Makd a request to another peer for a file."
   {:added "0.1.0"}
   [host port file-name]
   (let [[_ info] (first (filter (fn [[_, v]]
-                                  (and (= (:host v) host) (= (:port v) port))) 
+                                  (and (= (:host v) host) (= (:port v) port)))
                                 @channel-map))]
     (if (nil? info)
       (dosync
-        (alter channel-map assoc (keyword (str host ":" port)) {:host host
-                                                                :port port
-                                                                :ch (chan (dropping-buffer 100))})
-        (>!! (:ch ((keyword (str host ":" port)) @channel-map)) {:type 4 :file-name file-name}))
+       (alter channel-map assoc (keyword (str host ":" port)) {:host host
+                                                               :port port
+                                                               :ch (chan (dropping-buffer 10000))})
+       (>!! (:ch ((keyword (str host ":" port)) @channel-map)) {:type 4 :file-name file-name}))
       (>!! (:ch info) {:type 4 :file-name file-name}))))
 
 (defn save-file
@@ -100,37 +121,37 @@
         (go (>! write-chan (.getBytes (prn-str msg))))
         (str "FILE " file-name " DOES NOT EXIST")))))
 
+(defn logger
+  "Log the results of the requests."
+  {:added "0.1.0"}
+  [ch]
+  (loop []
+    (let [v (poll! ch)]
+      (when (not (nil? v))
+        (timbre/debug @v))
+      (recur))))
+
 (defn execute
   "Function to execute requests. To be run concurrently with the server event loop."
   {:added "0.1.0"}
   [ch & args]
-  (let [fut-ch (chan (dropping-buffer 100))]
+  (let [fut-ch (chan (dropping-buffer 10000))]
+    
+    (thread (logger fut-ch))
+    
     (loop []
       ; take a message off the channel
       (when-let [msg (<!! ch)]
         ; execute it in a future and put the future on the future channel
         (let [client-bindings {:file-name (:file-name msg)
                                :write-chan (:write-chan msg)
-                              ;  :dir @dir ; (nth (flatten args) 0)
                                :msg msg}]
           (case (:type msg)
             4 (go (>! fut-ch (future (handle-retrieve client-bindings))))))
-        ; use alts and timeout to check the future channel
-        ; error raised on dereference if the future errored
-        (let [[v _] (alts!! [fut-ch (timeout 10)])]
-          (logging/info @v)))
+        ; poll! for a result of a command, error raised on dereference if the future errored
+        (loop []
+          (let [v (poll! fut-ch)]
+            (when (not (nil? v))
+              (timbre/debug @v)
+              (recur)))))
       (recur))))
-
-; (defn execute-shadow-client
-;   "Make shadow requests on a semi-regular basis."
-;   {:added "0.1.0"}
-;   []
-;   (let [message-ch (chan (dropping-buffer 100))]
-;     (registry "127.0.0.1" 8714 message-ch)
-;     (let [results (connect-and-collect "127.0.0.1" 8715 message-ch)
-;           peer-id (:peer-id (nth results 0))]
-;       (register peer-id "some.txt" message-ch)
-;       (deregister peer-id "some.txt" message-ch)
-;       (search "some.txt" message-ch)
-
-;       (logging/info (into [] (concat results (connect-and-collect "127.0.0.1" 8715 message-ch)))))))

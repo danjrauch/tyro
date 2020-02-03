@@ -2,11 +2,12 @@
   (:require [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [clojure.set :refer :all]
+            [clojure.java.io :as io]
             [clj-time.core :as t]
             [clj-time.local :as l]
             [clojure.pprint :as pprint]
             [spinner.core :as spin]
-            [environ.core :as environ]
+            [trptcolin.versioneer.core :as version]
             [tyro.peer :as peer])
   (:use clojure.java.shell))
 
@@ -21,6 +22,7 @@
    [nil "--pid ID" "Peer ID"
     :parse-fn #(Integer/parseInt %)]
    ["-f" "--file FILENAME" "File name"]
+   [nil "--path PATH" "Path to test"]
    ["-v" nil "Verbosity level"
     :id :verbosity
     :default 0
@@ -181,6 +183,15 @@
        (recur new_buffer (count new_buffer)))
      (recur ~buffer ~cursor_pos)))
 
+(def required-args
+  {:registry [:host :port]
+   :register [:pid :file]
+   :deregister [:pid :file]
+   :search [:file]
+   :retrieve [:host :port :file]
+   :index [:host :port]
+   :perf [:path]})
+
 (defn get-results
   ""
   {:added "0.1.0"}
@@ -194,6 +205,25 @@
             results (peer/connect-and-collect (:host info) (:port info) (:ch info))]
         (recur (rest points) (into all-results results))))))
 
+(defn execute-command
+  "Execute a command for the repl"
+  {:added "0.1.0"}
+  [f required opts]
+  (if (empty? (difference (set required) (set (keys (:options opts)))))
+    (apply f (map #(% (:options opts)) required))
+    false))
+
+(defn calculate-stats
+  {:added "0.1.0"}
+  [results]
+  (let [total-time (reduce (fn [t r]
+                             (+ t (:time r)))
+                           0 results)
+        avg-time (double (/ total-time (count results)))]
+    {:count (count results)
+     :total-time total-time
+     :avg-time avg-time}))
+
 (defn handle-input
   ""
   {:added "0.1.0"}
@@ -201,50 +231,108 @@
   (let [opts (parse-opts args cli-options)]
     (cond
       (:errors opts) (do (println)
-                         (print (first (:errors opts))))
+                         (print (first (:errors opts)))
+                         (println))
       (contains? (:options opts) :help) (do (println)
-                                            (println "Provide only one arguemnt out of [registry register deregister search retrieve execute connections exit]")
+                                            (println "Provide only one arguemnt out of [registry register deregister search retrieve exec perf exit]")
                                             (println (:summary opts)))
       (== (count (:arguments opts)) 1) (case (first (:arguments opts))
-                                         "registry" (let [required [:host :port]]
-                                                      (if (empty? (difference (set required) (set (keys (:options opts)))))
-                                                        (do
-                                                          (peer/registry (:host (:options opts)) (:port (:options opts)))
-                                                          (println " Sent the registry request."))
-                                                        (println " Error with the registry request.")))
-                                         "register" (let [required [:pid :file]]
-                                                      (if (empty? (difference (set required) (set (keys (:options opts)))))
-                                                        (do
-                                                          (peer/register (:pid (:options opts)) (:file (:options opts)))
-                                                          (println " Sent the register request."))
-                                                        (println " Error with the register request.")))
-                                         "deregister" (let [required [:pid :file]]
-                                                        (if (empty? (difference (set required) (set (keys (:options opts)))))
-                                                          (do
-                                                            (peer/deregister (:pid (:options opts)) (:file (:options opts)))
-                                                            (println " Sent the deregister request."))
-                                                          (println " Error with the deregister request.")))
-                                         "search" (let [required [:file]]
-                                                    (if (empty? (difference (set required) (set (keys (:options opts)))))
+                                         "registry" (execute-command peer/registry (:registry required-args) opts)
+                                         "register" (execute-command peer/register (:register required-args) opts)
+                                         "deregister" (execute-command peer/deregister (:deregister required-args) opts)
+                                         "search" (execute-command peer/search (:search required-args) opts)
+                                         "retrieve" (execute-command peer/retrieve (:retrieve required-args) opts)
+                                         "index" (execute-command peer/set-index (:index required-args) opts)
+                                         "exec" (do
+                                                  (println "")
+                                                  (doseq [res (get-results (keys @peer/channel-map))]
+                                                    (if (and (== (:type res) 4) (> (count (:contents res)) 10))
                                                       (do
-                                                        (peer/search (:file (:options opts)))
-                                                        (println " Sent the search request."))
-                                                      (println " Error with the search request.")))
-                                         "retrieve" (let [required [:host :port :file]]
-                                                      (if (empty? (difference (set required) (set (keys (:options opts)))))
-                                                        (do
-                                                          (peer/retrieve (:host (:options opts)) (:port (:options opts)) (:file (:options opts)))
-                                                          (println " Executing."))
-                                                        (println " Error with the retrieve request.")))
-                                         "execute" (do
-                                                     (println " Sent the search request.")
-                                                     (doseq [res (get-results (keys @peer/channel-map))]
-                                                       (when (== (:type res) 4)
-                                                         (peer/save-file (:file-name res) (:contents res)))
-                                                       (println res)))
+                                                        (peer/save-file (:file-name res) (:contents res))
+                                                        (println (assoc res :contents (str (subs (:contents res) 0 10) "..."))))
+                                                      (println res))))
+                                         "perf" (if (empty? (difference (set (:perf required-args)) (set (keys (:options opts)))))
+                                                  (if (.exists (io/file (:path (:options opts))))
+                                                    (with-open [rdr (io/reader (:path (:options opts)))]
+                                                      (println "")
+                                                      (println "--------------" _C)
+                                                      (println "Commands" _R_)
+                                                      (println "--------------")
+                                                      (doseq [[i command] (map-indexed (fn [i itm] [i itm]) (line-seq rdr))]
+                                                        (if (< i 5)
+                                                          (println command)
+                                                          (when (< i 8)
+                                                            (println ".")))
+                                                        (let [args (str/split (str/trim command) #" ")
+                                                              opts (parse-opts args cli-options)]
+                                                          (if (and (== (count (:arguments opts)) 1) (= (first (:arguments opts)) "exec"))
+                                                            (let [all-results (get-results (keys @peer/channel-map))
+                                                                  all-stats (calculate-stats all-results)
+                                                                  registry-stats (calculate-stats (filter #(== (:type %) 0) all-results))
+                                                                  register-stats (calculate-stats (filter #(== (:type %) 1) all-results))
+                                                                  deregister-stats (calculate-stats (filter #(== (:type %) 2) all-results))
+                                                                  search-stats (calculate-stats (filter #(== (:type %) 3) all-results))
+                                                                  retrieve-stats (calculate-stats (filter #(== (:type %) 4) all-results))]
+                                                              (println "--------------" _B)
+                                                              (println "Results" _R_)
+                                                              (println "--------------")
+                                                              (loop [results all-results
+                                                                     i 0]
+                                                                (let [res (first results)
+                                                                      res (if (and (== (:type res) 4) (> (count (:contents res)) 10))
+                                                                            (assoc res :contents (str (subs (:contents res) 0 10) "..."))
+                                                                            res)]
+                                                                  (if (< i 5)
+                                                                    (println res)
+                                                                    (when (< i 8)
+                                                                      (println ".")))
+                                                                  (when (< i 10)
+                                                                    (recur (rest results) (inc i)))))
+                                                              (println "--------------" _R)
+                                                              (println "Statistics" _R_)
+                                                              (println "--------------")
+                                                              (print _P)
+                                                              (println "Total" _R_)
+                                                              (println (str "Count: " (:count all-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time all-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time all-stats)) " ms."))
+
+                                                              (print _P)
+                                                              (println "Registry" _R_)
+                                                              (println (str "Count: " (:count registry-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time registry-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time registry-stats)) " ms."))
+
+                                                              (print _P)
+                                                              (println "Register" _R_)
+                                                              (println (str "Count: " (:count register-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time register-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time register-stats)) " ms."))
+
+                                                              (print _P)
+                                                              (println "Deregister" _R_)
+                                                              (println (str "Count: " (:count deregister-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time deregister-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
+
+                                                              (print _P)                                                              
+                                                              (println "Search" _R_)
+                                                              (println (str "Count: " (:count search-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time search-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time search-stats)) " ms."))
+
+                                                              (print _P)
+                                                              (println "Retrieve" _R_)
+                                                              (println (str "Count: " (:count retrieve-stats) " requests"))
+                                                              (println (str "Total time: " (:total-time retrieve-stats) " ms."))
+                                                              (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
+                                                              (println))
+                                                            (handle-input args)))))
+                                                    (println " File does not exist."))
+                                                  (println " Error"))
                                          "exit" (do (println) (System/exit 0)))
       :else (do (println)
-                (println "Provide only one arguemnt out of [registry register deregister search retrieve check exit]")
+                (println "Provide only one arguemnt out of [registry register deregister search retrieve exec perf exit]")
                 (println (:summary opts))))))
 
 (defn repl
@@ -313,8 +401,7 @@
   "Starts the repl session"
   {:added "0.1.0"}
   []
-  ; (prints print _G (clojure.string/replace (slurp "resources/branding") #"VERSION" (:mesh-version environ/env)) _B)
-  (prints print (clojure.string/replace (slurp "resources/branding") #"VERSION" (:tyro-version environ/env)))
+  (prints print (clojure.string/replace (slurp "resources/branding") #"VERSION" (version/get-version "GROUP-ID" "ARTIFACT-ID")))
   (addShutdownHook (fn [] (turn-char-buffering-off)))
   (turn-char-buffering-on)
   (while true (repl))
