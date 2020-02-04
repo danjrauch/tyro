@@ -1,6 +1,12 @@
 # tyro
 
-FIXME: description
+P2P File Sharing System
+
+## Creating Data
+
+```
+base64 /dev/urandom | head -c 1000000 > 1.txt
+```
 
 ## Installation
 
@@ -18,19 +24,15 @@ FIXME: listing of options this app accepts.
 
 ## Examples
 
-...
+![4 Peer Repl](https://raw.githubusercontent.com/danjrauch/tyro/master/resources/4peer_repl.png)
 
 ### Bugs
 
 ...
 
-### Any Other Sections
-### That You Think
-### Might be Useful
-
 ## License
 
-Copyright © 2020 FIXME
+Copyright © 2020
 
 This program and the accompanying materials are made available under the
 terms of the Eclipse Public License 2.0 which is available at

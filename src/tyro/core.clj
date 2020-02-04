@@ -59,8 +59,7 @@
 
 (defn -main
   [& args]
-  (when (not= (version/get-version "GROUP-ID" "ARTIFACT-ID") "")
-    )
+  (when (not= (version/get-version "GROUP-ID" "ARTIFACT-ID") ""))
 
   (timbre/merge-config! {:appenders {:println {:enabled? false}
                                      :spit (appenders/spit-appender {:fname "timbre.log"})}})

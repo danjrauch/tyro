@@ -8,7 +8,8 @@
             [clojure.pprint :as pprint]
             [spinner.core :as spin]
             [trptcolin.versioneer.core :as version]
-            [tyro.peer :as peer])
+            [tyro.peer :as peer]
+            [tyro.script :as script])
   (:use clojure.java.shell))
 
 ;; Enhancement from TARS cli library
@@ -22,7 +23,9 @@
    [nil "--pid ID" "Peer ID"
     :parse-fn #(Integer/parseInt %)]
    ["-f" "--file FILENAME" "File name"]
-   [nil "--path PATH" "Path to test"]
+   ["-n" "--name NAME" "Name of script"]
+   ["-s" "--silent" "Silent mode"
+    :default false]
    ["-v" nil "Verbosity level"
     :id :verbosity
     :default 0
@@ -190,7 +193,23 @@
    :search [:file]
    :retrieve [:host :port :file]
    :index [:host :port]
-   :perf [:path]})
+   :perf [:path]
+   :run [:name]})
+
+(defn print-help
+  "Print the help message"
+  [opts]
+  (println (:summary opts))
+  (println)
+  (println "index -h HOST -p PORT")
+  (println "registry -h HOST -p PORT")
+  (println "register --pid PID -f FILENAME")
+  (println "deregister --pid PID -f FILENAME")
+  (println "search -f FILENAME")
+  (println "retrieve -h HOST -p PORT -f FILENAME")
+  (println "run -n NAME [--silent]")
+  (println "perf --path PATH")
+  (println))
 
 (defn get-results
   ""
@@ -209,9 +228,21 @@
   "Execute a command for the repl"
   {:added "0.1.0"}
   [f required opts]
-  (if (empty? (difference (set required) (set (keys (:options opts)))))
-    (apply f (map #(% (:options opts)) required))
-    false))
+  (when (empty? (difference (set required) (set (keys (:options opts)))))
+    (let [on (apply f (map #(% (:options opts)) required))]
+      (when (not (:silent (:options opts)))
+        (if on
+          (println "")
+          (println "")))
+      on)))
+
+(defn run-script
+  "Run a script for a peer"
+  {:added "0.1.0"}
+  [script-name]
+  (case script-name
+    "register-stress" (script/register-stress)
+    :else false))
 
 (defn calculate-stats
   {:added "0.1.0"}
@@ -219,23 +250,26 @@
   (let [total-time (reduce (fn [t r]
                              (+ t (:time r)))
                            0 results)
-        avg-time (double (/ total-time (count results)))]
-    {:count (count results)
+        total-count (count results)
+        avg-time (double (/ total-time (if (== total-count 0)
+                                         1
+                                         total-count)))]
+    {:count total-count
      :total-time total-time
      :avg-time avg-time}))
 
 (defn handle-input
   ""
   {:added "0.1.0"}
-  [args]
-  (let [opts (parse-opts args cli-options)]
+  [opts]
+  (let [silent (:silent (:options opts))]
     (cond
-      (:errors opts) (do (println)
-                         (print (first (:errors opts)))
-                         (println))
-      (contains? (:options opts) :help) (do (println)
-                                            (println "Provide only one arguemnt out of [registry register deregister search retrieve exec perf exit]")
-                                            (println (:summary opts)))
+      (:errors opts) (when (not silent)
+                       (println)
+                       (println (first (:errors opts))))
+      (contains? (:options opts) :help) (when (not silent)
+                                          (println)
+                                          (print-help opts))
       (== (count (:arguments opts)) 1) (case (first (:arguments opts))
                                          "registry" (execute-command peer/registry (:registry required-args) opts)
                                          "register" (execute-command peer/register (:register required-args) opts)
@@ -244,25 +278,24 @@
                                          "retrieve" (execute-command peer/retrieve (:retrieve required-args) opts)
                                          "index" (execute-command peer/set-index (:index required-args) opts)
                                          "exec" (do
-                                                  (println "")
+                                                  (when (not silent)
+                                                    (println ""))
                                                   (doseq [res (get-results (keys @peer/channel-map))]
-                                                    (if (and (== (:type res) 4) (> (count (:contents res)) 10))
-                                                      (do
-                                                        (peer/save-file (:file-name res) (:contents res))
-                                                        (println (assoc res :contents (str (subs (:contents res) 0 10) "..."))))
+                                                    (when (and (not silent) (== (:type res) 4))
+                                                      (peer/save-file (:file-name res) (:contents res)))
+                                                    (if (and (not silent) (== (:type res) 4) (> (count (:contents res)) 10))
+                                                      (println (assoc res :contents (str (subs (:contents res) 0 10) "...")))
                                                       (println res))))
+                                         "run" (if (empty? (difference (set (:run required-args)) (set (keys (:options opts)))))
+                                                 (do
+                                                   (println "")
+                                                   (apply run-script (map #(% (:options opts)) (:run required-args))))
+                                                 (println " Error"))
                                          "perf" (if (empty? (difference (set (:perf required-args)) (set (keys (:options opts)))))
                                                   (if (.exists (io/file (:path (:options opts))))
                                                     (with-open [rdr (io/reader (:path (:options opts)))]
                                                       (println "")
-                                                      (println "--------------" _C)
-                                                      (println "Commands" _R_)
-                                                      (println "--------------")
-                                                      (doseq [[i command] (map-indexed (fn [i itm] [i itm]) (line-seq rdr))]
-                                                        (if (< i 5)
-                                                          (println command)
-                                                          (when (< i 8)
-                                                            (println ".")))
+                                                      (doseq [[_ command] (map-indexed (fn [i itm] [i itm]) (line-seq rdr))]
                                                         (let [args (str/split (str/trim command) #" ")
                                                               opts (parse-opts args cli-options)]
                                                           (if (and (== (count (:arguments opts)) 1) (= (first (:arguments opts)) "exec"))
@@ -284,9 +317,9 @@
                                                                             res)]
                                                                   (if (< i 5)
                                                                     (println res)
-                                                                    (when (< i 8)
+                                                                    (when (and (< i 8) (> (count all-results) 8))
                                                                       (println ".")))
-                                                                  (when (< i 10)
+                                                                  (when (and (seq (rest results)) (< i 10))
                                                                     (recur (rest results) (inc i)))))
                                                               (println "--------------" _R)
                                                               (println "Statistics" _R_)
@@ -315,7 +348,7 @@
                                                               (println (str "Total time: " (:total-time deregister-stats) " ms."))
                                                               (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
 
-                                                              (print _P)                                                              
+                                                              (print _P)
                                                               (println "Search" _R_)
                                                               (println (str "Count: " (:count search-stats) " requests"))
                                                               (println (str "Total time: " (:total-time search-stats) " ms."))
@@ -327,13 +360,12 @@
                                                               (println (str "Total time: " (:total-time retrieve-stats) " ms."))
                                                               (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
                                                               (println))
-                                                            (handle-input args)))))
+                                                            (handle-input (parse-opts (conj args "--silent") cli-options))))))
                                                     (println " File does not exist."))
                                                   (println " Error"))
                                          "exit" (do (println) (System/exit 0)))
       :else (do (println)
-                (println "Provide only one arguemnt out of [registry register deregister search retrieve exec perf exit]")
-                (println (:summary opts))))))
+                (print-help opts)))))
 
 (defn repl
   "Read-Eval-Print-Loop implementation."
@@ -368,7 +400,7 @@
           (cond
             ; (nil? buffer) ""
             (str/blank? buffer) (do (println) "")
-            :else (handle-input (str/split (str/trim buffer) #" "))))
+            :else (handle-input (parse-opts (str/split (str/trim buffer) #" ") cli-options))))
         ;; On-backspace entered.
         (= input_char ascii_backspace)
         (handle-backspace buffer cursor_pos)
