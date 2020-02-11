@@ -31,87 +31,42 @@
   (f arg)
   (flush))
 
-(defn calculate-stats
-  {:added "0.1.0"}
-  [results]
-  (let [total-time (reduce (fn [t r]
-                             (+ t (:time r)))
-                           0 results)
-        total-count (count results)
-        avg-time (double (/ total-time (if (== total-count 0)
-                                         1
-                                         total-count)))]
-    {:count total-count
-     :total-time total-time
-     :avg-time avg-time}))
+(defn stress-test
+  [host port]
+  (Thread/sleep 10000)
+  (peer/set-index host 8715)
+  (peer/registry host port)
+  
+  (let [results (atom (peer/connect-and-collect (:host (:index @peer/channel-map))
+                                                (:port (:index @peer/channel-map))
+                                                (:ch (:index @peer/channel-map))))
+        pid (:peer-id (nth @results 0))
+        files (filter #(not (.isDirectory %)) (file-seq (clojure.java.io/file @peer/dir)))
+        file-names (for [file files] (.getName file))]
+    (doseq [file-name file-names]
+      (peer/register pid file-name))
 
-(defn register-stress
-  []
-  (peer/set-index "127.0.0.1" 8715)
-  (dotimes [_ 1000]
-    (peer/register 1 "1.txt"))
-  (peer/search "1.txt")
+    ; TODO input file name to search for
+    (peer/search "1.txt")
 
-  (let [all-results (peer/connect-and-collect (:host (:index @peer/channel-map))
-                                              (:port (:index @peer/channel-map))
-                                              (:ch (:index @peer/channel-map)))
-        all-stats (calculate-stats all-results)
-        registry-stats (calculate-stats (filter #(== (:type %) 0) all-results))
-        register-stats (calculate-stats (filter #(== (:type %) 1) all-results))
-        deregister-stats (calculate-stats (filter #(== (:type %) 2) all-results))
-        search-stats (calculate-stats (filter #(== (:type %) 3) all-results))
-        retrieve-stats (calculate-stats (filter #(== (:type %) 4) all-results))]
-    (println "--------------" _B)
-    (println "Results" _R_)
-    (println "--------------")
-    (loop [results all-results
-           i 0]
-      (let [res (first results)
-            res (if (and (== (:type res) 4) (> (count (:contents res)) 10))
-                  (assoc res :contents (str (subs (:contents res) 0 10) "..."))
-                  res)]
-        (if (< i 5)
-          (println res)
-          (when (and (< i 8) (> (count all-results) 8))
-            (println ".")))
-        (when (and (seq (rest results)) (< i 10))
-          (recur (rest results) (inc i)))))
-    (println "--------------" _R)
-    (println "Statistics" _R_)
-    (println "--------------")
-    (print _P)
-    (println "Total" _R_)
-    (println (str "Count: " (:count all-stats) " requests"))
-    (println (str "Total time: " (:total-time all-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time all-stats)) " ms."))
+    (swap! results into (peer/connect-and-collect (:host (:index @peer/channel-map))
+                                                  (:port (:index @peer/channel-map))
+                                                  (:ch (:index @peer/channel-map))))
+    
+    (let [peer-host (atom "")
+          peer-port (atom -1)]
+      (doseq [result @results]
+        (when (and (== (:type result) 3) (== (count (:endpoints result)) 1))
+          (reset! peer-host (:host (nth (:endpoints result) 0)))
+          (reset! peer-port (:port (nth (:endpoints result) 0)))
+          (peer/retrieve @peer-host @peer-port (:file-name result))
 
-    (print _P)
-    (println "Registry" _R_)
-    (println (str "Count: " (:count registry-stats) " requests"))
-    (println (str "Total time: " (:total-time registry-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time registry-stats)) " ms."))
-
-    (print _P)
-    (println "Register" _R_)
-    (println (str "Count: " (:count register-stats) " requests"))
-    (println (str "Total time: " (:total-time register-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time register-stats)) " ms."))
-
-    (print _P)
-    (println "Deregister" _R_)
-    (println (str "Count: " (:count deregister-stats) " requests"))
-    (println (str "Total time: " (:total-time deregister-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
-
-    (print _P)
-    (println "Search" _R_)
-    (println (str "Count: " (:count search-stats) " requests"))
-    (println (str "Total time: " (:total-time search-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time search-stats)) " ms."))
-
-    (print _P)
-    (println "Retrieve" _R_)
-    (println (str "Count: " (:count retrieve-stats) " requests"))
-    (println (str "Total time: " (:total-time retrieve-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
-    (println)))
+          (swap! results into (peer/connect-and-collect @peer-host
+                                                        @peer-port
+                                                        (:ch ((keyword (str @peer-host ":" @peer-port)) @peer/channel-map)))))))
+    
+    (doseq [result @results]
+      (when (== (:type result) 4)
+        (peer/save-file (:file-name result) (:contents result))))
+    
+    @results))

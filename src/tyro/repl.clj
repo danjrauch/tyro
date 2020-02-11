@@ -24,6 +24,7 @@
     :parse-fn #(Integer/parseInt %)]
    ["-f" "--file FILENAME" "File name"]
    ["-n" "--name NAME" "Name of script"]
+   [nil "--path PATH" "Path to the resource"]
    ["-s" "--silent" "Silent mode"
     :default false]
    ["-v" nil "Verbosity level"
@@ -194,7 +195,7 @@
    :retrieve [:host :port :file]
    :index [:host :port]
    :perf [:path]
-   :run [:name]})
+   :run [:name :host :port]})
 
 (defn print-help
   "Print the help message"
@@ -207,8 +208,8 @@
   (println "deregister --pid PID -f FILENAME")
   (println "search -f FILENAME")
   (println "retrieve -h HOST -p PORT -f FILENAME")
-  (println "run -n NAME [--silent]")
   (println "perf --path PATH")
+  (println "run -n NAME -h HOST -p PORT [--silent]")
   (println))
 
 (defn get-results
@@ -239,9 +240,9 @@
 (defn run-script
   "Run a script for a peer"
   {:added "0.1.0"}
-  [script-name]
+  [script-name host port]
   (case script-name
-    "register-stress" (script/register-stress)
+    "stress-test" (script/stress-test host port)
     :else false))
 
 (defn calculate-stats
@@ -257,6 +258,70 @@
     {:count total-count
      :total-time total-time
      :avg-time avg-time}))
+
+(defn print-stats
+  {:added "0.1.0"}
+  [all-results]
+  (let [all-stats (calculate-stats all-results)
+        registry-stats (calculate-stats (filter #(== (:type %) 0) all-results))
+        register-stats (calculate-stats (filter #(== (:type %) 1) all-results))
+        deregister-stats (calculate-stats (filter #(== (:type %) 2) all-results))
+        search-stats (calculate-stats (filter #(== (:type %) 3) all-results))
+        retrieve-stats (calculate-stats (filter #(== (:type %) 4) all-results))]
+    (println "--------------" _B)
+    (println "Results" _R_)
+    (println "--------------")
+    (loop [results all-results
+           i 0]
+      (let [res (first results)
+            res (if (and (== (:type res) 4) (> (count (:contents res)) 10))
+                  (assoc res :contents (str (subs (:contents res) 0 10) "..."))
+                  res)]
+        (if (< i 5)
+          (println res)
+          (when (and (< i 8) (> (count all-results) 8))
+            (println ".")))
+        (when (and (seq (rest results)) (< i 10))
+          (recur (rest results) (inc i)))))
+    (println "--------------" _R)
+    (println "Statistics" _R_)
+    (println "--------------")
+    (print _P)
+    (println "Total" _R_)
+    (println (str "Count: " (:count all-stats) " requests"))
+    (println (str "Total time: " (:total-time all-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time all-stats)) " ms."))
+
+    (print _P)
+    (println "Registry" _R_)
+    (println (str "Count: " (:count registry-stats) " requests"))
+    (println (str "Total time: " (:total-time registry-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time registry-stats)) " ms."))
+
+    (print _P)
+    (println "Register" _R_)
+    (println (str "Count: " (:count register-stats) " requests"))
+    (println (str "Total time: " (:total-time register-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time register-stats)) " ms."))
+
+    (print _P)
+    (println "Deregister" _R_)
+    (println (str "Count: " (:count deregister-stats) " requests"))
+    (println (str "Total time: " (:total-time deregister-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
+
+    (print _P)
+    (println "Search" _R_)
+    (println (str "Count: " (:count search-stats) " requests"))
+    (println (str "Total time: " (:total-time search-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time search-stats)) " ms."))
+
+    (print _P)
+    (println "Retrieve" _R_)
+    (println (str "Count: " (:count retrieve-stats) " requests"))
+    (println (str "Total time: " (:total-time retrieve-stats) " ms."))
+    (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
+    (println)))
 
 (defn handle-input
   ""
@@ -287,9 +352,12 @@
                                                       (println (assoc res :contents (str (subs (:contents res) 0 10) "...")))
                                                       (println res))))
                                          "run" (if (empty? (difference (set (:run required-args)) (set (keys (:options opts)))))
-                                                 (do
+                                                 (let [s (spin/create! {:frames (:braille spin/styles)})]
+                                                   (spin/start! s)
+                                                   (def results (apply run-script (map #(% (:options opts)) (:run required-args))))
+                                                   (spin/stop! s)
                                                    (println "")
-                                                   (apply run-script (map #(% (:options opts)) (:run required-args))))
+                                                   (print-stats results))
                                                  (println " Error"))
                                          "perf" (if (empty? (difference (set (:perf required-args)) (set (keys (:options opts)))))
                                                   (if (.exists (io/file (:path (:options opts))))
@@ -299,67 +367,7 @@
                                                         (let [args (str/split (str/trim command) #" ")
                                                               opts (parse-opts args cli-options)]
                                                           (if (and (== (count (:arguments opts)) 1) (= (first (:arguments opts)) "exec"))
-                                                            (let [all-results (get-results (keys @peer/channel-map))
-                                                                  all-stats (calculate-stats all-results)
-                                                                  registry-stats (calculate-stats (filter #(== (:type %) 0) all-results))
-                                                                  register-stats (calculate-stats (filter #(== (:type %) 1) all-results))
-                                                                  deregister-stats (calculate-stats (filter #(== (:type %) 2) all-results))
-                                                                  search-stats (calculate-stats (filter #(== (:type %) 3) all-results))
-                                                                  retrieve-stats (calculate-stats (filter #(== (:type %) 4) all-results))]
-                                                              (println "--------------" _B)
-                                                              (println "Results" _R_)
-                                                              (println "--------------")
-                                                              (loop [results all-results
-                                                                     i 0]
-                                                                (let [res (first results)
-                                                                      res (if (and (== (:type res) 4) (> (count (:contents res)) 10))
-                                                                            (assoc res :contents (str (subs (:contents res) 0 10) "..."))
-                                                                            res)]
-                                                                  (if (< i 5)
-                                                                    (println res)
-                                                                    (when (and (< i 8) (> (count all-results) 8))
-                                                                      (println ".")))
-                                                                  (when (and (seq (rest results)) (< i 10))
-                                                                    (recur (rest results) (inc i)))))
-                                                              (println "--------------" _R)
-                                                              (println "Statistics" _R_)
-                                                              (println "--------------")
-                                                              (print _P)
-                                                              (println "Total" _R_)
-                                                              (println (str "Count: " (:count all-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time all-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time all-stats)) " ms."))
-
-                                                              (print _P)
-                                                              (println "Registry" _R_)
-                                                              (println (str "Count: " (:count registry-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time registry-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time registry-stats)) " ms."))
-
-                                                              (print _P)
-                                                              (println "Register" _R_)
-                                                              (println (str "Count: " (:count register-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time register-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time register-stats)) " ms."))
-
-                                                              (print _P)
-                                                              (println "Deregister" _R_)
-                                                              (println (str "Count: " (:count deregister-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time deregister-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
-
-                                                              (print _P)
-                                                              (println "Search" _R_)
-                                                              (println (str "Count: " (:count search-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time search-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time search-stats)) " ms."))
-
-                                                              (print _P)
-                                                              (println "Retrieve" _R_)
-                                                              (println (str "Count: " (:count retrieve-stats) " requests"))
-                                                              (println (str "Total time: " (:total-time retrieve-stats) " ms."))
-                                                              (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
-                                                              (println))
+                                                            (print-stats (get-results (keys @peer/channel-map)))
                                                             (handle-input (parse-opts (conj args "--silent") cli-options))))))
                                                     (println " File does not exist."))
                                                   (println " Error"))

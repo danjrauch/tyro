@@ -9,6 +9,7 @@
                      logf tracef debugf infof warnf errorf fatalf reportf
                      spy get-env]]))
 
+; (def host )
 (def dir (ref ""))
 (def channel-map (ref {}))
 
