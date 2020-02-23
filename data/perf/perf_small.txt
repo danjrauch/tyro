@@ -1,8 +1,8 @@
 index -h 127.0.0.1 -p 8715
-registry -h 127.0.0.1 -p 8713
-register --pid 1 -f some.txt
-deregister --pid 1 -f some.txt
-register --pid 1 -f some.txt
-search -f some.txt
-retrieve -h 127.0.0.1 -p 8714 -f some.txt
+registry -h 127.0.0.1 -p 8711
+register --pid 1 -f 1.txt
+deregister --pid 1 -f 1.txt
+register --pid 1 -f 1.txt
+search -f 1.txt
+retrieve -h 127.0.0.1 -p 8711 -f 1.txt
 exec

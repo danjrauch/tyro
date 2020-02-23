@@ -11,8 +11,10 @@
   [client-bindings]
   (dosync
    (let [{:keys [p2f-index endpoint-index] {:keys [host port write-chan]} :msg} client-bindings
-         id-creator (fnil inc 0)
-         peer-id (id-creator (first (sort > (keys @p2f-index))))]
+         possible-peer (filter #(= {:host host :port port} (second %)) (seq @endpoint-index))
+         peer-id (if (empty? possible-peer)
+                   ((fnil inc 0) (first (sort > (keys @p2f-index))))
+                   (first (first possible-peer)))]
      (alter p2f-index assoc peer-id #{})
      (alter endpoint-index assoc peer-id {:host host
                                           :port port})
@@ -83,6 +85,7 @@
         p2f-index (ref {})
         endpoint-index (ref {})]
     
+    ; start a logging thread
     (thread (logger fut-ch))
     
     (loop []
@@ -92,15 +95,15 @@
         (let [client-bindings {:p2f-index p2f-index
                                :f2p-index f2p-index
                                :endpoint-index endpoint-index
-                              ;  :host (:host msg)
-                              ;  :port (:port msg)
-                              ;  :file-name (:file-name msg)
-                              ;  :peer-id (:peer-id msg)
-                              ;  :client-ch (:write-chan msg)
                                :msg msg}]
           (case (:type msg)
-            0 (go (>! fut-ch (future (handle-registry client-bindings))))
-            1 (go (>! fut-ch (future (handle-register client-bindings))))
-            2 (go (>! fut-ch (future (handle-deregister client-bindings))))
-            3 (go (>! fut-ch (future (handle-search client-bindings)))))))
+            ; 0 (go (>! fut-ch (future (handle-registry client-bindings))))
+            ; 1 (go (>! fut-ch (future (handle-register client-bindings))))
+            ; 2 (go (>! fut-ch (future (handle-deregister client-bindings))))
+            ; 3 (go (>! fut-ch (future (handle-search client-bindings))))
+
+            0 (timbre/debug (handle-registry client-bindings))
+            1 (timbre/debug (handle-register client-bindings))
+            2 (timbre/debug (handle-deregister client-bindings))
+            3 (timbre/debug (handle-search client-bindings)))))
       (recur))))

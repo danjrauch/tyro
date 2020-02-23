@@ -358,7 +358,7 @@
                                                    (spin/stop! s)
                                                    (println "")
                                                    (print-stats results))
-                                                 (println " Error"))
+                                                 (println " Required arguments not supplied"))
                                          "perf" (if (empty? (difference (set (:perf required-args)) (set (keys (:options opts)))))
                                                   (if (.exists (io/file (:path (:options opts))))
                                                     (with-open [rdr (io/reader (:path (:options opts)))]
@@ -370,8 +370,9 @@
                                                             (print-stats (get-results (keys @peer/channel-map)))
                                                             (handle-input (parse-opts (conj args "--silent") cli-options))))))
                                                     (println " File does not exist."))
-                                                  (println " Error"))
-                                         "exit" (do (println) (System/exit 0)))
+                                                  (println " Required arguments not supplied"))
+                                         "exit" (do (println) (System/exit 0))
+                                         (println " Command doesn't exist"))
       :else (do (println)
                 (print-help opts)))))
 

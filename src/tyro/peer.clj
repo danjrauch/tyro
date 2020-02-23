@@ -2,6 +2,7 @@
   (:require [clojure.core.async :refer [<!! <! >! >!! go alts! alts!! poll! close! thread timeout dropping-buffer chan]]
             [clojure.string :as str]
             [clojure.java.io :as io]
+            [clojure.set :as set]
             [clojure.edn :as edn]
             [net.async.tcp :refer [event-loop connect accept]]
             [taoensso.timbre :as timbre
@@ -9,9 +10,10 @@
                      logf tracef debugf infof warnf errorf fatalf reportf
                      spy get-env]]))
 
-; (def host )
+(def pid (ref -1))
 (def dir (ref ""))
 (def channel-map (ref {}))
+(def file-history (ref []))
 
 (defn connect-and-collect
   [host port message-ch]
@@ -38,6 +40,8 @@
                                (assoc res :time (- (System/currentTimeMillis) (:time res))))
                              (when (and (keyword? read) (not= :connected read))
                                (recur))))]
+            (when (== (:type response) 0)
+              (dosync (ref-set pid (:peer-id response))))
             (recur (conj results response) (inc i)))))
       [{:type -1 :connection-error true :host host :port port}])))
 
@@ -49,7 +53,9 @@
   (if (contains? @channel-map :index)
     (let [info (:index @channel-map)
           results (connect-and-collect (:host info) (:port info) (:ch info))]
-      results)
+      (dosync
+       (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
+       results))
     (dosync
      (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
      [])))
@@ -87,7 +93,7 @@
     false))
 
 (defn retrieve
-  "Makd a request to another peer for a file."
+  "Make a request to another peer for a file."
   {:added "0.1.0"}
   [host port file-name]
   (let [[_ info] (first (filter (fn [[_, v]]
@@ -132,13 +138,43 @@
         (timbre/debug @v))
       (recur))))
 
+(defn sync-dir
+  "Synchronize contents of dir with the index."
+  {:added "0.1.0"}
+  []
+  (loop []
+    (when (and (not= @pid -1) (not= @dir ""))
+      (let [files (filter #(not (.isDirectory %)) (file-seq (io/file @dir)))
+            actual-file-names (map #(.getName %) files)
+            historical-file-names (map :name @file-history)
+            new-file-names (set/difference (set actual-file-names) (set historical-file-names))
+            deleted-file-names (set/difference (set historical-file-names) (set actual-file-names))]
+        (doseq [n new-file-names]
+          (register @pid n))
+
+        (doseq [d deleted-file-names]
+          (deregister @pid d))
+
+        ; (when (contains? @channel-map :index)
+        ;   (connect-and-collect (:host (:index @channel-map))
+        ;                        (:port (:index @channel-map))
+        ;                        (:ch (:index @channel-map))))
+
+        (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)}))))))
+    (Thread/sleep 30000)
+    (recur)))
+
 (defn execute
   "Function to execute requests. To be run concurrently with the server event loop."
   {:added "0.1.0"}
   [ch & args]
   (let [fut-ch (chan (dropping-buffer 10000))]
     
+    ; start a logging thread
     (thread (logger fut-ch))
+
+    ; start a thread for directory syncing
+    (thread (sync-dir))
     
     (loop []
       ; take a message off the channel
