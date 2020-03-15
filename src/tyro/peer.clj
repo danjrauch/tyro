@@ -16,6 +16,8 @@
 (def file-history (ref []))
 
 (defn connect-and-collect
+  "Connect to a server and return the results"
+  {:added "0.1.0"}
   [host port message-ch]
   (let [client (connect (event-loop) {:host host :port port})
         n (loop [i 0]
@@ -99,6 +101,7 @@
   (let [[_ info] (first (filter (fn [[_, v]]
                                   (and (= (:host v) host) (= (:port v) port)))
                                 @channel-map))]
+    ; put a retrieve request on the peer's channel, register one if necessary
     (if (nil? info)
       (dosync
        (alter channel-map assoc (keyword (str host ":" port)) {:host host
@@ -149,9 +152,11 @@
             historical-file-names (map :name @file-history)
             new-file-names (set/difference (set actual-file-names) (set historical-file-names))
             deleted-file-names (set/difference (set historical-file-names) (set actual-file-names))]
+        ; register the new files with the index
         (doseq [n new-file-names]
           (register @pid n))
 
+        ; deregister the files that were moved/deleted
         (doseq [d deleted-file-names]
           (deregister @pid d))
 
@@ -159,7 +164,7 @@
         ;   (connect-and-collect (:host (:index @channel-map))
         ;                        (:port (:index @channel-map))
         ;                        (:ch (:index @channel-map))))
-
+        
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)}))))))
     (Thread/sleep 30000)
     (recur)))

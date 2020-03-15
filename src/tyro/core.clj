@@ -82,6 +82,7 @@
       (timbre/error "Provide a value for the option \"--dir\" for argument \"peer\".")
       (System/exit 0))
 
+    ; if there are no errors, start the requested service
     (let [node-type (first (:arguments opts))
           port (:port (:options opts))
           dir (:dir (:options opts))]
