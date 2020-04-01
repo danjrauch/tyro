@@ -1,22 +1,26 @@
 (ns tyro.core
   (:gen-class)
-  (:require [clojure.core.async :refer [<!! <! >! >!! go alts!! thread timeout dropping-buffer chan]]
+  (:require [clojure.core.async :refer [<!! <! >! >!! go alts! alts!! poll! close! thread timeout dropping-buffer chan]]
             [clojure.edn :as edn]
+            [clojure.set :refer :all]
+            [clojure.java.io :as io]
             [clojure.tools.cli :refer [parse-opts]]
             [net.async.tcp :refer [event-loop connect accept]]
             [trptcolin.versioneer.core :as version]
             [tyro.index :as ind]
             [tyro.peer :as peer]
             [tyro.repl :as repl]
+            [tyro.tool :as tool]
             [taoensso.timbre.appenders.core :as appenders]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
                      logf tracef debugf infof warnf errorf fatalf reportf
-                     spy get-env]]))
+                     spy get-env]])
+  (:use clojure.java.shell))
 
 (def cli-options
   [["-p" "--port PORT" "Port number"
-    :default 80
+    :default 8000
     :parse-fn #(Integer/parseInt %)
     :validate [#(< 0 % 0x10000) "Must be a number between 0 and 65536"]]
    ["-d" "--dir DIR" "File directory"
@@ -24,6 +28,9 @@
     :parse-fn #(String. %)]
    ;; A non-idempotent option (:default is applied first)
    [nil "--repl" "REPL Mode for Peer"]
+   [nil "--path PATH" "Path to the resource"]
+   ["-i" "--id ID" "ID of the node"
+    :parse-fn #(Integer/parseInt %)]
    ["-v" nil "Verbosity level"
     :id :verbosity
     :default 0
@@ -37,7 +44,7 @@
   [executor port & args]
   (let [exec-chan (chan (dropping-buffer 10000))]
 
-    (thread (executor exec-chan (flatten args)))
+    (thread (apply executor (conj (flatten args) port exec-chan)))
 
     (let [acceptor (accept (event-loop) {:port port})]
       (timbre/debug "SERVER RUNNING")
@@ -57,6 +64,16 @@
                 (recur))))
           (recur))))))
 
+(defn print-help
+  "Print the help message"
+  [opts]
+  (println (:summary opts))
+  (println)
+  (println "index -p PORT [--repl]")
+  (println "peer -p PORT -d DIR [--repl]")
+  (println "run-config --path PATH --id ID")
+  (println))
+
 (defn -main
   [& args]
   (when (not= (version/get-version "GROUP-ID" "ARTIFACT-ID") ""))
@@ -64,34 +81,68 @@
   (timbre/merge-config! {:appenders {:println {:enabled? false}
                                      :spit (appenders/spit-appender {:fname "timbre.log"})}})
 
-  (let [opts (parse-opts args cli-options)]
-    (when (:errors opts)
-      (timbre/error (first (:errors opts)))
-      (System/exit 0))
+  (let [opts (parse-opts args cli-options)
+        required-args {:index [:port]
+                       :peer [:port :dir]
+                       :simulation [:path]
+                       :run-config [:path :id]}]
+    (cond
+      (:errors opts) (do
+                       (timbre/error (first (:errors opts)))
+                       (System/exit 0))
+      (contains? (:options opts) :help) (do
+                                          (println)
+                                          (print-help opts))
+      (== (count (:arguments opts)) 1) (let [req-arg-pass (empty? (difference (set ((keyword (first (:arguments opts))) required-args))
+                                                                              (set (keys (:options opts)))))
+                                             port (:port (:options opts))
+                                             dir (:dir (:options opts))]
+                                         (case (first (:arguments opts))
+                                           "index" (if req-arg-pass
+                                                     (if (= (:repl (:options opts)) true)
+                                                       (do
+                                                         (thread (start-server ind/execute port))
+                                                         (repl/start-repl "index"))
+                                                       (start-server ind/execute port))
+                                                     (System/exit 0))
+                                           "peer" (if req-arg-pass
+                                                    (if (= (:repl (:options opts)) true)
+                                                      (do
+                                                        (thread (start-server peer/execute port dir))
+                                                        (repl/start-repl "peer"))
+                                                      (start-server peer/execute port dir))
+                                                    (System/exit 0))
+                                           ; lein run simulation --path config/sim.edn
+                                           ; TODO run "pkill -f tyro" after sim
+                                           "simulation" (if req-arg-pass
+                                                          (let [config (tool/load-edn (:path (:options opts)))]
+                                                            (doseq [index-config (:nodes config)]
+                                                              (thread (sh "lein" "run" "run-config" "--path" (:path (:options opts)) "--id" (str (:id index-config))))
+                                                              (doseq [peer-config (:leaves index-config)]
+                                                                (thread (sh "lein" "run" "run-config" "--path" (:path (:options opts)) "--id" (str (:id peer-config))))))
+                                                            (Thread/sleep 200000)
+                                                            (sh "pkill" "-f" "tyro"))
+                                                          (System/exit 0))
+                                           "run-config" (if req-arg-pass
+                                                          (let [config (tool/load-edn (:path (:options opts)))
+                                                                id (:id (:options opts))]
+                                                            (doseq [index-config (:nodes config)]
+                                                              (when (== (:id index-config) id)
+                                                                (doseq [con-id (get (:connections config) id)]
+                                                                  (doseq [con-map (filter #(== (:id %) con-id) (:nodes config))]
+                                                                    ; (timbre/debug (str "ADDED ID: " con-id " TO ID: " id "'s PEER LIST"))
+                                                                    (ind/add (:host con-map) (:port con-map))))
+                                                                (thread (start-server ind/execute (:port index-config)))
+                                                                (Thread/sleep 200000))
 
-    (when (not (contains? (:options opts) :port))
-      (timbre/error "Provide a value for the option \"--port\".")
-      (System/exit 0))
-
-    (when (not= (count (:arguments opts)) 1)
-      (timbre/error "Provide only one arguemnt of either \"index\" or \"peer\".")
-      (System/exit 0))
-
-    (when (and (= (first (:arguments opts)) "peer")
-               (not (contains? (:options opts) :dir)))
-      (timbre/error "Provide a value for the option \"--dir\" for argument \"peer\".")
-      (System/exit 0))
-
-    ; if there are no errors, start the requested service
-    (let [node-type (first (:arguments opts))
-          port (:port (:options opts))
-          dir (:dir (:options opts))]
-      (case node-type
-        "index" (start-server ind/execute port)
-        "peer" (do
-                 (dosync (ref-set peer/dir dir))
-                 (if (= (:repl (:options opts)) true)
-                   (do
-                     (thread (start-server peer/execute port dir))
-                     (repl/start-repl))
-                   (start-server peer/execute port dir)))))))
+                                                              (doseq [peer-config (:leaves index-config)]
+                                                                (when (== (:id peer-config) id)
+                                                                  (peer/set-index (:host index-config) (:port index-config))
+                                                                  (thread (start-server peer/execute (:port peer-config) (:dir peer-config)))
+                                                                  (Thread/sleep 10000)
+                                                                  (repl/run-script (:script peer-config) (:host peer-config) (:port peer-config))
+                                                                  (Thread/sleep 200000)))))
+                                                          (System/exit 0))
+                                           (println " Command doesn't exist")))
+      :else (do (println)
+                (print-help opts)))))

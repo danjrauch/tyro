@@ -7,6 +7,7 @@
                  [org.clojure/core.async "0.7.559"]
                  [com.taoensso/timbre "4.10.0"]
                  [org.clojure/tools.cli "0.4.2"]
+                 [org.clojure/math.numeric-tower "0.0.4"]
                  [net.async/async "0.1.0"]
                  [trptcolin/versioneer "0.2.0"]
                  [clj-time "0.15.0"]

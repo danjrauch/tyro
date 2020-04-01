@@ -5,6 +5,7 @@
             [clojure.set :as set]
             [clojure.edn :as edn]
             [net.async.tcp :refer [event-loop connect accept]]
+            [tyro.tool :as tool]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
                      logf tracef debugf infof warnf errorf fatalf reportf
@@ -14,38 +15,9 @@
 (def dir (ref ""))
 (def channel-map (ref {}))
 (def file-history (ref []))
-
-(defn connect-and-collect
-  "Connect to a server and return the results"
-  {:added "0.1.0"}
-  [host port message-ch]
-  (let [client (connect (event-loop) {:host host :port port})
-        n (loop [i 0]
-            (let [v (poll! message-ch)]
-              (if (nil? v)
-                i
-                (do
-                  (>!! (:write-chan client)
-                       (.getBytes (prn-str (assoc v :time (System/currentTimeMillis)))))
-                  (recur (inc i))))))
-        check (<!! (:read-chan client))]
-    (if (= :connected check)
-      ; TODO just put results on a result-ch
-      (loop [results []
-             i 0]
-        (if (== i n)
-          results
-          (let [read (<!! (:read-chan client))
-                response (loop []
-                           (if (not (keyword? read))
-                             (let [res (edn/read-string (String. read))]
-                               (assoc res :time (- (System/currentTimeMillis) (:time res))))
-                             (when (and (keyword? read) (not= :connected read))
-                               (recur))))]
-            (when (== (:type response) 0)
-              (dosync (ref-set pid (:peer-id response))))
-            (recur (conj results response) (inc i)))))
-      [{:type -1 :connection-error true :host host :port port}])))
+(def my-host (ref ""))
+(def my-port (ref -1))
+(def message-count (atom -1))
 
 (defn set-index
   "Set the endpoint of the index.
@@ -54,7 +26,7 @@
   [host port]
   (if (contains? @channel-map :index)
     (let [info (:index @channel-map)
-          results (connect-and-collect (:host info) (:port info) (:ch info))]
+          results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
       (dosync
        (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
        results))
@@ -74,7 +46,7 @@
   "Register a file with the index."
   {:added "0.1.0"}
   [peer-id file-name]
-  (if (contains? @channel-map :index)
+  (if (and (contains? @channel-map :index) (not= @pid -1))
     (>!! (:ch (:index @channel-map)) {:type 1 :peer-id peer-id :file-name file-name})
     false))
 
@@ -82,7 +54,7 @@
   "Deregister a file with the index."
   {:added "0.1.0"}
   [peer-id file-name]
-  (if (contains? @channel-map :index)
+  (if (and (contains? @channel-map :index) (not= @pid -1))
     (>!! (:ch (:index @channel-map)) {:type 2 :peer-id peer-id :file-name file-name})
     false))
 
@@ -90,8 +62,13 @@
   "Search for a list of viable peers that have a certain file."
   {:added "0.1.0"}
   [file-name]
-  (if (contains? @channel-map :index)
-    (>!! (:ch (:index @channel-map)) {:type 3 :file-name file-name})
+  (if (and (contains? @channel-map :index) (not= @pid -1))
+    (>!! (:ch (:index @channel-map)) {:type 3
+                                      :file-name file-name
+                                      :host @my-host
+                                      :port @my-port
+                                      :ttl 3
+                                      :id (str @pid (swap! message-count inc))})
     false))
 
 (defn retrieve
@@ -161,12 +138,12 @@
           (deregister @pid d))
 
         ; (when (contains? @channel-map :index)
-        ;   (connect-and-collect (:host (:index @channel-map))
+        ;   (tool/connect-and-collect (:host (:index @channel-map))
         ;                        (:port (:index @channel-map))
         ;                        (:ch (:index @channel-map))))
-        
+
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)}))))))
-    (Thread/sleep 30000)
+    (Thread/sleep 3000)
     (recur)))
 
 (defn execute
@@ -174,13 +151,17 @@
   {:added "0.1.0"}
   [ch & args]
   (let [fut-ch (chan (dropping-buffer 10000))]
-    
+    (dosync
+     (ref-set dir (nth args 1))
+     (ref-set my-host "127.0.0.1")
+     (ref-set my-port (nth args 0)))
+
     ; start a logging thread
     (thread (logger fut-ch))
 
     ; start a thread for directory syncing
     (thread (sync-dir))
-    
+
     (loop []
       ; take a message off the channel
       (when-let [msg (<!! ch)]

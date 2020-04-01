@@ -1,9 +1,23 @@
 (ns tyro.index
   (:require [clojure.core.async :refer [<!! <! >! >!! go alts!! thread poll! timeout dropping-buffer chan]]
+            [tyro.tool :as tool]
+            [clojure.math.numeric-tower :as math]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
                      logf tracef debugf infof warnf errorf fatalf reportf
                      spy get-env]]))
+
+(def channel-map (ref {}))
+(def message-index (ref {}))
+
+(defn add
+  "Add an index to the index's peer list."
+  {:added "0.2.0"}
+  [host port]
+  (dosync
+   (let [endpoint-keyword (keyword (str host ":" port))]
+     (when (not (contains? @channel-map endpoint-keyword))
+       (alter channel-map assoc endpoint-keyword {:host host :port port :ch (chan (dropping-buffer 10000))})))))
 
 (defn handle-registry
   "Return unique peer ID. Peer needs to remember this number."
@@ -13,7 +27,10 @@
    (let [{:keys [p2f-index endpoint-index] {:keys [host port write-chan]} :msg} client-bindings
          possible-peer (filter #(= {:host host :port port} (second %)) (seq @endpoint-index))
          peer-id (if (empty? possible-peer)
-                   ((fnil inc 0) (first (sort > (keys @p2f-index))))
+                   ; TODO Research an even better solution than this
+                   ; ((fnil inc 0) (first (sort > (keys @p2f-index))))
+                   ;  (rand-int 1000000)
+                   (math/abs (hash (str tool/get-ip port)))
                    (first (first possible-peer)))]
      (alter p2f-index assoc peer-id #{})
      (alter endpoint-index assoc peer-id {:host host
@@ -59,11 +76,30 @@
   "Search the global index and return the endpoint map for peers with that file."
   {:added "0.1.0"}
   [client-bindings]
-  (let [{:keys [f2p-index endpoint-index] {:keys [file-name write-chan]} :msg} client-bindings
-        results (vec (map #(get @endpoint-index %) (get @f2p-index file-name)))]
-    (let [msg (assoc (:msg client-bindings) :endpoints results :success true)
-          msg (dissoc msg :write-chan)]
-      (go (>! write-chan (.getBytes (prn-str msg)))))
+  (let [{:keys [f2p-index endpoint-index] {:keys [file-name id host port ttl write-chan]} :msg} client-bindings]
+    (if (contains? @message-index id)
+      (let [msg (assoc (:msg client-bindings)
+                       :endpoints []
+                       :hit false
+                       :success true
+                       :ttl (dec ttl))
+            msg (dissoc msg :write-chan)]
+        (>!! write-chan (.getBytes (prn-str msg))))
+      (let [results (atom (vec (map #(get @endpoint-index %) (get @f2p-index file-name))))
+            msg (assoc (:msg client-bindings)
+                       :success true
+                       :ttl (dec ttl))
+            msg (dissoc msg :write-chan)]
+        (dosync
+         (alter message-index assoc id (str host ":" port)))
+        (when (pos? ttl)
+          ; (timbre/debug (str (vec (map :port (vals @channel-map)))))
+          (doseq [con-index (vals @channel-map)]
+            (>!! (:ch con-index) msg)
+            (timbre/debug (str "FORWARDING A SEARCH REQUEST WITH ID: " id " to PORT: " (:port con-index)))
+            (doseq [result (tool/connect-and-collect (:host con-index) (:port con-index) (:ch con-index))]
+              (swap! results into (:endpoints result)))))
+        (>!! write-chan (.getBytes (prn-str (assoc msg :endpoints @results :hit (not (empty? @results))))))))
     (str "RETURNED RESULTS for file " file-name " to client")))
 
 (defn logger
@@ -84,10 +120,10 @@
         f2p-index (ref {})
         p2f-index (ref {})
         endpoint-index (ref {})]
-    
+
     ; start a logging thread
     (thread (logger fut-ch))
-    
+
     (loop []
       ; take a message off the channel
       (when-let [msg (<!! ch)]
@@ -101,9 +137,11 @@
             ; 1 (go (>! fut-ch (future (handle-register client-bindings))))
             ; 2 (go (>! fut-ch (future (handle-deregister client-bindings))))
             ; 3 (go (>! fut-ch (future (handle-search client-bindings))))
-
+            
             0 (timbre/debug (handle-registry client-bindings))
             1 (timbre/debug (handle-register client-bindings))
             2 (timbre/debug (handle-deregister client-bindings))
-            3 (timbre/debug (handle-search client-bindings)))))
+            3 (go (>! fut-ch (future (handle-search client-bindings))))
+            ;; 3 (timbre/debug (handle-search client-bindings))
+            )))
       (recur))))

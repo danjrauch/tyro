@@ -8,13 +8,29 @@
             [clojure.pprint :as pprint]
             [spinner.core :as spin]
             [trptcolin.versioneer.core :as version]
+            [tyro.index :as ind]
             [tyro.peer :as peer]
-            [tyro.script :as script])
+            [tyro.script :as script]
+            [tyro.tool :as tool])
   (:use clojure.java.shell))
 
 ;; Enhancement from TARS cli library
 
-(def cli-options
+(def cli-index-options
+  [["-h" "--host HOST" "Host"]
+   ["-p" "--port PORT" "Port number"
+    :default 8000
+    :parse-fn #(Integer/parseInt %)
+    :validate [#(< 0 % 0x10000) "Must be a number between 0 and 65536"]]
+   ["-s" "--silent" "Silent mode"
+    :default false]
+   ["-v" nil "Verbosity level"
+    :id :verbosity
+    :default 0
+    :update-fn inc]
+   [nil "--help"]])
+
+(def cli-peer-options
   [["-h" "--host HOST" "Host"]
    ["-p" "--port PORT" "Port number"
     :default 8000
@@ -187,18 +203,18 @@
        (recur new_buffer (count new_buffer)))
      (recur ~buffer ~cursor_pos)))
 
-(def required-args
-  {:registry [:host :port]
-   :register [:pid :file]
-   :deregister [:pid :file]
-   :search [:file]
-   :retrieve [:host :port :file]
-   :index [:host :port]
-   :perf [:path]
-   :run [:name :host :port]})
+(defn print-index-help
+  "Print the index help message"
+  {:added "0.2.0"}
+  [opts]
+  (println (:summary opts))
+  (println)
+  (println "add -h HOST -p PORT")
+  (println))
 
-(defn print-help
-  "Print the help message"
+(defn print-peer-help
+  "Print the peer help message"
+  {:added "0.1.0"}
   [opts]
   (println (:summary opts))
   (println)
@@ -212,17 +228,25 @@
   (println "run -n NAME -h HOST -p PORT [--silent]")
   (println))
 
+(defn run-script
+  "Run a script for a node"
+  {:added "0.1.0"}
+  [script-name host port]
+  (case script-name
+    "stress-test" (script/stress-test host port)
+    :else false))
+
 (defn get-results
   ""
   {:added "0.1.0"}
-  [endpoints]
+  [endpoints channel-map]
   (loop [points endpoints
          all-results []]
     (if (empty? points)
       all-results
       (let [point (keyword (first points))
-            info (point @peer/channel-map)
-            results (peer/connect-and-collect (:host info) (:port info) (:ch info))]
+            info (point channel-map)
+            results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
         (recur (rest points) (into all-results results))))))
 
 (defn execute-command
@@ -237,104 +261,46 @@
           (println "")))
       on)))
 
-(defn run-script
-  "Run a script for a peer"
-  {:added "0.1.0"}
-  [script-name host port]
-  (case script-name
-    "stress-test" (script/stress-test host port)
-    :else false))
-
-(defn calculate-stats
-  {:added "0.1.0"}
-  [results]
-  (let [total-time (reduce (fn [t r]
-                             (+ t (:time r)))
-                           0 results)
-        total-count (count results)
-        avg-time (double (/ total-time (if (== total-count 0)
-                                         1
-                                         total-count)))]
-    {:count total-count
-     :total-time total-time
-     :avg-time avg-time}))
-
-(defn print-stats
-  {:added "0.1.0"}
-  [all-results]
-  (let [all-stats (calculate-stats all-results)
-        registry-stats (calculate-stats (filter #(== (:type %) 0) all-results))
-        register-stats (calculate-stats (filter #(== (:type %) 1) all-results))
-        deregister-stats (calculate-stats (filter #(== (:type %) 2) all-results))
-        search-stats (calculate-stats (filter #(== (:type %) 3) all-results))
-        retrieve-stats (calculate-stats (filter #(== (:type %) 4) all-results))]
-    (println "--------------" _B)
-    (println "Results" _R_)
-    (println "--------------")
-    (loop [results all-results
-           i 0]
-      (let [res (first results)
-            res (if (and (== (:type res) 4) (> (count (:contents res)) 10))
-                  (assoc res :contents (str (subs (:contents res) 0 10) "..."))
-                  res)]
-        (if (< i 5)
-          (println res)
-          (when (and (< i 8) (> (count all-results) 8))
-            (println ".")))
-        (when (and (seq (rest results)) (< i 10))
-          (recur (rest results) (inc i)))))
-    (println "--------------" _R)
-    (println "Statistics" _R_)
-    (println "--------------")
-    (print _P)
-    (println "Total" _R_)
-    (println (str "Count: " (:count all-stats) " requests"))
-    (println (str "Total time: " (:total-time all-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time all-stats)) " ms."))
-
-    (print _P)
-    (println "Registry" _R_)
-    (println (str "Count: " (:count registry-stats) " requests"))
-    (println (str "Total time: " (:total-time registry-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time registry-stats)) " ms."))
-
-    (print _P)
-    (println "Register" _R_)
-    (println (str "Count: " (:count register-stats) " requests"))
-    (println (str "Total time: " (:total-time register-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time register-stats)) " ms."))
-
-    (print _P)
-    (println "Deregister" _R_)
-    (println (str "Count: " (:count deregister-stats) " requests"))
-    (println (str "Total time: " (:total-time deregister-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time deregister-stats)) " ms."))
-
-    (print _P)
-    (println "Search" _R_)
-    (println (str "Count: " (:count search-stats) " requests"))
-    (println (str "Total time: " (:total-time search-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time search-stats)) " ms."))
-
-    (print _P)
-    (println "Retrieve" _R_)
-    (println (str "Count: " (:count retrieve-stats) " requests"))
-    (println (str "Total time: " (:total-time retrieve-stats) " ms."))
-    (println (str "Average time: " (format "%.0f" (:avg-time retrieve-stats)) " ms."))
-    (println)))
-
-(defn handle-input
-  ""
-  {:added "0.1.0"}
+(defn handle-index-input
+  "Handle index REPL input"
+  {:added "0.2.0"}
   [opts]
-  (let [silent (:silent (:options opts))]
+  (let [required-args {:add [:host :port]}
+        silent (:silent (:options opts))]
     (cond
       (:errors opts) (when (not silent)
                        (println)
                        (println (first (:errors opts))))
       (contains? (:options opts) :help) (when (not silent)
                                           (println)
-                                          (print-help opts))
+                                          (print-index-help opts))
+      (== (count (:arguments opts)) 1) (case (first (:arguments opts))
+                                         "add" (execute-command ind/add (:add required-args) opts)
+                                         "exit" (do (println) (System/exit 0))
+                                         (println " Command doesn't exist"))
+      :else (do (println)
+                (print-index-help opts)))))
+
+(defn handle-peer-input
+  "Handle peer REPL input"
+  {:added "0.1.0"}
+  [opts]
+  (let [required-args {:registry [:host :port]
+                       :register [:pid :file]
+                       :deregister [:pid :file]
+                       :search [:file]
+                       :retrieve [:host :port :file]
+                       :index [:host :port]
+                       :perf [:path]
+                       :run [:name :host :port]}
+        silent (:silent (:options opts))]
+    (cond
+      (:errors opts) (when (not silent)
+                       (println)
+                       (println (first (:errors opts))))
+      (contains? (:options opts) :help) (when (not silent)
+                                          (println)
+                                          (print-peer-help opts))
       (== (count (:arguments opts)) 1) (case (first (:arguments opts))
                                          "registry" (execute-command peer/registry (:registry required-args) opts)
                                          "register" (execute-command peer/register (:register required-args) opts)
@@ -345,7 +311,9 @@
                                          "exec" (do
                                                   (when (not silent)
                                                     (println ""))
-                                                  (doseq [res (get-results (keys @peer/channel-map))]
+                                                  (doseq [res (get-results (keys @peer/channel-map) @peer/channel-map)]
+                                                    (when (== (:type res) 0)
+                                                      (dosync (ref-set peer/pid (:peer-id res))))
                                                     (when (and (not silent) (== (:type res) 4))
                                                       (peer/save-file (:file-name res) (:contents res)))
                                                     (if (and (not silent) (== (:type res) 4) (> (count (:contents res)) 10))
@@ -357,7 +325,7 @@
                                                    (def results (apply run-script (map #(% (:options opts)) (:run required-args))))
                                                    (spin/stop! s)
                                                    (println "")
-                                                   (print-stats results))
+                                                   (tool/print-peer-stats results))
                                                  (println " Required arguments not supplied"))
                                          "perf" (if (empty? (difference (set (:perf required-args)) (set (keys (:options opts)))))
                                                   (if (.exists (io/file (:path (:options opts))))
@@ -365,21 +333,21 @@
                                                       (println "")
                                                       (doseq [[_ command] (map-indexed (fn [i itm] [i itm]) (line-seq rdr))]
                                                         (let [args (str/split (str/trim command) #" ")
-                                                              opts (parse-opts args cli-options)]
+                                                              opts (parse-opts args cli-peer-options)]
                                                           (if (and (== (count (:arguments opts)) 1) (= (first (:arguments opts)) "exec"))
-                                                            (print-stats (get-results (keys @peer/channel-map)))
-                                                            (handle-input (parse-opts (conj args "--silent") cli-options))))))
+                                                            (tool/print-peer-stats (get-results (keys @peer/channel-map) @peer/channel-map))
+                                                            (handle-peer-input (parse-opts (conj args "--silent") cli-peer-options))))))
                                                     (println " File does not exist."))
                                                   (println " Required arguments not supplied"))
                                          "exit" (do (println) (System/exit 0))
                                          (println " Command doesn't exist"))
       :else (do (println)
-                (print-help opts)))))
+                (print-peer-help opts)))))
 
 (defn repl
   "Read-Eval-Print-Loop implementation."
   {:added "0.1.0"}
-  []
+  [type]
   (print-prompt)
   (loop [buffer "" cursor_pos 0]
     (let [input_char (.read System/in)]
@@ -409,7 +377,9 @@
           (cond
             ; (nil? buffer) ""
             (str/blank? buffer) (do (println) "")
-            :else (handle-input (parse-opts (str/split (str/trim buffer) #" ") cli-options))))
+            (= type "peer") (handle-peer-input (parse-opts (str/split (str/trim buffer) #" ") cli-peer-options))
+            (= type "index") (handle-index-input (parse-opts (str/split (str/trim buffer) #" ") cli-index-options))
+            :else (println "Incorrect CLI type")))
         ;; On-backspace entered.
         (= input_char ascii_backspace)
         (handle-backspace buffer cursor_pos)
@@ -441,9 +411,11 @@
 (defn start-repl
   "Starts the repl session"
   {:added "0.1.0"}
-  []
+  [type]
   (prints print (clojure.string/replace (slurp "resources/branding") #"VERSION" (version/get-version "GROUP-ID" "ARTIFACT-ID")))
+  (println (str "Running " _R type _R_ " server"))
+  (println)
   (addShutdownHook (fn [] (turn-char-buffering-off)))
   (turn-char-buffering-on)
-  (while true (repl))
+  (while true (repl type))
   (System/exit 0))

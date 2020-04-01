@@ -1,0 +1,90 @@
+{:nodes [{:id 0
+          :host "127.0.0.1"
+          :port 8000
+          :leaves [{:id 10
+                    :host "127.0.0.1"
+                    :port 8001
+                    :dir "./data/peer1"
+                    :script "stress-test"}]}
+         {:id 1
+          :host "127.0.0.1"
+          :port 8100
+          :leaves [{:id 11
+                    :host "127.0.0.1"
+                    :port 8101
+                    :dir "./data/peer2"
+                    :script "stress-test"}]}
+         {:id 2
+          :host "127.0.0.1"
+          :port 8200
+          :leaves [{:id 12
+                    :host "127.0.0.1"
+                    :port 8201
+                    :dir "./data/peer3"
+                    :script "stress-test"}]}
+         {:id 3
+          :host "127.0.0.1"
+          :port 8300
+          :leaves [{:id 13
+                    :host "127.0.0.1"
+                    :port 8301
+                    :dir "./data/peer4"
+                    :script "stress-test"}]}
+         {:id 4
+          :host "127.0.0.1"
+          :port 8400
+          :leaves [{:id 14
+                    :host "127.0.0.1"
+                    :port 8401
+                    :dir "./data/peer5"
+                    :script "stress-test"}]}
+         {:id 5
+          :host "127.0.0.1"
+          :port 8500
+          :leaves [{:id 15
+                    :host "127.0.0.1"
+                    :port 8501
+                    :dir "./data/peer6"
+                    :script "stress-test"}]}
+         {:id 6
+          :host "127.0.0.1"
+          :port 8600
+          :leaves [{:id 16
+                    :host "127.0.0.1"
+                    :port 8601
+                    :dir "./data/peer7"
+                    :script "stress-test"}]}
+         {:id 7
+          :host "127.0.0.1"
+          :port 8700
+          :leaves [{:id 17
+                    :host "127.0.0.1"
+                    :port 8701
+                    :dir "./data/peer8"
+                    :script "stress-test"}]}
+         {:id 8
+          :host "127.0.0.1"
+          :port 8800
+          :leaves [{:id 18
+                    :host "127.0.0.1"
+                    :port 8801
+                    :dir "./data/peer9"
+                    :script "stress-test"}]}
+         {:id 9
+          :host "127.0.0.1"
+          :port 8900
+          :leaves [{:id 19
+                    :host "127.0.0.1"
+                    :port 8901
+                    :dir "./data/peer10"
+                    :script "stress-test"}]}]
+ :connections {0 [9 1]
+               1 [0 2]
+               2 [1 3]
+               3 [2 4]
+               4 [3 5]
+               5 [4 6]
+               6 [5 7]
+               7 [6 8]
+               8 [7 9]
+               9 [8 0]}}
