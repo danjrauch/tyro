@@ -12,5 +12,4 @@ pom.xml.asc
 .hg/
 .DS_Store
 *.log
-data/peer*
 .vagrant
