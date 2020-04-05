@@ -116,12 +116,18 @@
                                            ; TODO run "pkill -f tyro" after sim
                                            "simulation" (if req-arg-pass
                                                           (let [config (tool/load-edn (:path (:options opts)))]
+                                                            (println "Starting simulation.")
                                                             (doseq [index-config (:nodes config)]
+                                                              (println "Starting index with ID: " (str (:id index-config)))
                                                               (thread (sh "lein" "run" "run-config" "--path" (:path (:options opts)) "--id" (str (:id index-config))))
                                                               (doseq [peer-config (:leaves index-config)]
+                                                                (println "Starting peer with ID: " (str (:id peer-config)))
                                                                 (thread (sh "lein" "run" "run-config" "--path" (:path (:options opts)) "--id" (str (:id peer-config))))))
+                                                            (println "Going to sleep...")
                                                             (Thread/sleep 200000)
-                                                            (sh "pkill" "-f" "tyro"))
+                                                            (println "Woke up. Killing stragglers...")
+                                                            (sh "pkill" "-f" "tyro")
+                                                            (println "Ending simulation."))
                                                           (System/exit 0))
                                            "run-config" (if req-arg-pass
                                                           (let [config (tool/load-edn (:path (:options opts)))
