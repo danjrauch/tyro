@@ -28,10 +28,10 @@
     (let [info (:index @channel-map)
           results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
       (dosync
-       (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
+       (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 1000))})
        results))
     (dosync
-     (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
+     (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 1000))})
      [])))
 
 (defn registry
@@ -83,7 +83,7 @@
       (dosync
        (alter channel-map assoc (keyword (str host ":" port)) {:host host
                                                                :port port
-                                                               :ch (chan (dropping-buffer 10000))})
+                                                               :ch (chan (dropping-buffer 1000))})
        (>!! (:ch ((keyword (str host ":" port)) @channel-map)) {:type 4 :file-name file-name}))
       (>!! (:ch info) {:type 4 :file-name file-name}))))
 
@@ -150,7 +150,7 @@
   "Function to execute requests. To be run concurrently with the server event loop."
   {:added "0.1.0"}
   [ch & args]
-  (let [fut-ch (chan (dropping-buffer 10000))]
+  (let [fut-ch (chan (dropping-buffer 100))]
     (dosync
      (ref-set dir (nth args 1))
      (ref-set my-host "127.0.0.1")

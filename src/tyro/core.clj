@@ -42,7 +42,7 @@
   "Starts the index server."
   {:added "0.1.0"}
   [executor port & args]
-  (let [exec-chan (chan (dropping-buffer 10000))]
+  (let [exec-chan (chan (dropping-buffer 1000))]
 
     (thread (apply executor (conj (flatten args) port exec-chan)))
 

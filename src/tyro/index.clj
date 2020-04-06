@@ -17,7 +17,7 @@
   (dosync
    (let [endpoint-keyword (keyword (str host ":" port))]
      (when (not (contains? @channel-map endpoint-keyword))
-       (alter channel-map assoc endpoint-keyword {:host host :port port :ch (chan (dropping-buffer 10000))})))))
+       (alter channel-map assoc endpoint-keyword {:host host :port port :ch (chan (dropping-buffer 100))})))))
 
 (defn handle-registry
   "Return unique peer ID. Peer needs to remember this number."
@@ -122,7 +122,7 @@
   "Function to execute requests. To be run concurrently with the server event loop."
   {:added "0.1.0"}
   [ch & _]
-  (let [fut-ch (chan (dropping-buffer 10000))
+  (let [fut-ch (chan (dropping-buffer 100))
         f2p-index (ref {})
         p2f-index (ref {})
         endpoint-index (ref {})]
