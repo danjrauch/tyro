@@ -84,6 +84,8 @@
                        :success true
                        :ttl (dec ttl))
             msg (dissoc msg :write-chan)]
+        (dosync 
+         (alter message-index update-in [id] + 100))
         (>!! write-chan (.getBytes (prn-str msg))))
       (let [results (atom (vec (map #(get @endpoint-index %) (get @f2p-index file-name))))
             msg (assoc (:msg client-bindings)
@@ -91,7 +93,7 @@
                        :ttl (dec ttl))
             msg (dissoc msg :write-chan)]
         (dosync
-         (alter message-index assoc id (str host ":" port)))
+         (alter message-index assoc id (System/currentTimeMillis)))
         (when (pos? ttl)
           ; (timbre/debug (str (vec (map :port (vals @channel-map)))))
           (doseq [con-index (vals @channel-map)]
@@ -107,6 +109,10 @@
   {:added "0.1.0"}
   [ch]
   (loop []
+    (doseq [[k v] @message-index]
+      (when (< v (- (System/currentTimeMillis) 500))
+        (dosync
+         (alter message-index dissoc k))))
     (let [v (poll! ch)]
       (when (not (nil? v))
         (timbre/debug @v))
