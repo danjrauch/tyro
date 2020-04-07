@@ -10,7 +10,7 @@
 
 (defn stress-test
   [host port]
-  (when (not (== port 8001))
+  (when (not= port 8001)
     (Thread/sleep 10000))
   (when (not (contains? @peer/channel-map :index))
     (peer/set-index host 8715))
@@ -35,36 +35,34 @@
       (doseq [file-name file-names]
         (peer/register pid file-name))
 
-      ; TODO input file name to search for
-      ; search for the file 1.txt
-      
       (dotimes [_ 1]
-        (peer/search "1.txt"))
+        (when (not= port 8001)
+          (peer/search "1.txt")))
 
-      ; [8001 8101 8201 8301 8401 8501 8601 8701 8801 8901]
-      
       ; (let [ports-to-run-search [8001]]
       ;   (when (some #{port} ports-to-run-search)
       ;     (dotimes [_ 1]
       ;       (peer/search "1.txt"))))
-
+      
       ; get the results of the previous requests
       (swap! results into (tool/connect-and-collect (:host (:index @peer/channel-map))
                                                     (:port (:index @peer/channel-map))
                                                     (:ch (:index @peer/channel-map))))
 
-      (let [total-search-time (atom 0)
-            total-searches (atom 0)]
-        (doseq [result @results]
-          (when (== (:type result) 3)
-            (swap! total-search-time + (:time result))
-            (swap! total-searches inc)))
-        (timbre/debug (str "AVERAGE SEARCH TIME: " (double (/ @total-search-time @total-searches)))))
-
+      ; (let [total-search-time (atom 0)
+      ;       total-searches (atom 0)]
+      ;   (doseq [result @results]
+      ;     (when (== (:type result) 3)
+      ;       (swap! total-search-time + (:time result))
+      ;       (swap! total-searches inc)))
+      ;   (timbre/debug (str "AVERAGE SEARCH TIME: " (double (/ @total-search-time @total-searches)))))
+      
       ; connect to the peer with 1.txt and download it
       (let [peer-host (atom "")
             peer-port (atom -1)]
         (doseq [result @results]
+          (when (== (:type result) 3)
+            (timbre/debug (str "SEARCH COUNT: " (count (:endpoints result)))))
           (when (and (== (:type result) 3) (> (count (:endpoints result)) 0))
             (reset! peer-host (:host (nth (:endpoints result) 0)))
             (reset! peer-port (:port (nth (:endpoints result) 0)))
@@ -77,6 +75,12 @@
       ; save 1.txt to our directory
       (doseq [result @results]
         (when (== (:type result) 4)
+          (timbre/debug (str "SAVING FILE: " (:file-name result)))
           (peer/save-file (:file-name result) (:contents result))))
 
+      ; (when (== port 8001)
+      ;   (Thread/sleep 20000)
+      ;   (spit (str @peer/dir "/1.txt") (apply str (take 10000 (repeatedly #(char (+ (rand 26) 65))))))
+      ;   (Thread/sleep 5000))
+      
       @results)))

@@ -28,10 +28,10 @@
     (let [info (:index @channel-map)
           results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
       (dosync
-       (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 1000))})
+       (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
        results))
     (dosync
-     (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 1000))})
+     (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
      [])))
 
 (defn registry
@@ -83,7 +83,7 @@
       (dosync
        (alter channel-map assoc (keyword (str host ":" port)) {:host host
                                                                :port port
-                                                               :ch (chan (dropping-buffer 1000))})
+                                                               :ch (chan (dropping-buffer 10000))})
        (>!! (:ch ((keyword (str host ":" port)) @channel-map)) {:type 4 :file-name file-name}))
       (>!! (:ch info) {:type 4 :file-name file-name}))))
 
@@ -91,7 +91,9 @@
   "Write the file contents to the dir."
   {:added "0.1.0"}
   [file-name contents]
-  (spit (io/file @dir file-name) contents))
+  (let [file (io/file @dir "downloads" file-name)]
+    (io/make-parents file)
+    (spit file contents)))
 
 (defn handle-retrieve
   "Download the file contents and put it on the write back channel."
@@ -107,6 +109,20 @@
             msg (dissoc msg :write-chan)]
         (go (>! write-chan (.getBytes (prn-str msg))))
         (str "FILE " file-name " DOES NOT EXIST")))))
+
+(defn handle-invalidate
+  "Delete an invalid file from the directory."
+  {:added "0.3.0"}
+  [client-bindings]
+  (let [{:keys [file-name write-chan msg]} client-bindings
+        file (io/file @dir "downloads" file-name)
+        success (and (.exists file) (io/delete-file file))
+        msg (assoc msg :success success)
+        msg (dissoc msg :write-chan)]
+    (go (>! write-chan (.getBytes (prn-str msg))))
+    (if success
+      (str "DELETED FILE " file-name)
+      (str "FILE " file-name " DOES NOT EXIST OR COULD NOT BE DELETED"))))
 
 (defn logger
   "Log the results of the requests."
@@ -128,7 +144,12 @@
             actual-file-names (map #(.getName %) files)
             historical-file-names (map :name @file-history)
             new-file-names (set/difference (set actual-file-names) (set historical-file-names))
-            deleted-file-names (set/difference (set historical-file-names) (set actual-file-names))]
+            deleted-file-names (set/difference (set historical-file-names) (set actual-file-names))
+            invalid-file-names (into deleted-file-names (set (for [file files
+                                                                   hist-file @file-history
+                                                                   :when (and (= (:name hist-file) (.getName file))
+                                                                              (< (:last-modified hist-file) (.lastModified file)))]
+                                                               (:name hist-file))))]
         ; register the new files with the index
         (doseq [n new-file-names]
           (register @pid n))
@@ -137,12 +158,26 @@
         (doseq [d deleted-file-names]
           (deregister @pid d))
 
+        ; If an old file was modified since the last time we checked, 
+        ; send an invalid message to the index, either in a lazy or eager way.
+        
         ; (when (contains? @channel-map :index)
-        ;   (tool/connect-and-collect (:host (:index @channel-map))
-        ;                        (:port (:index @channel-map))
-        ;                        (:ch (:index @channel-map))))
-
-        (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)}))))))
+        ;   (doseq [invalid-file-name invalid-file-names]
+        ;     ; send the invalid message to the index
+        ;     (>!! (:ch (:index @channel-map)) {:type 5
+        ;                                       :file-name invalid-file-name
+        ;                                       :host @my-host
+        ;                                       :port @my-port
+        ;                                       :id (str @pid (swap! message-count inc))}))
+        
+        ;   (when (not-empty invalid-file-names)
+        ;     (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
+        ;     (tool/connect-and-collect (:host (:index @channel-map))
+        ;                               (:port (:index @channel-map))
+        ;                               (:ch (:index @channel-map)))))
+        
+        (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)
+                                                              :last-modified (.lastModified file)}))))))
     (Thread/sleep 3000)
     (recur)))
 
@@ -150,7 +185,7 @@
   "Function to execute requests. To be run concurrently with the server event loop."
   {:added "0.1.0"}
   [ch & args]
-  (let [fut-ch (chan (dropping-buffer 100))]
+  (let [fut-ch (chan (dropping-buffer 10000))]
     (dosync
      (ref-set dir (nth args 1))
      (ref-set my-host "127.0.0.1")
@@ -170,7 +205,8 @@
                                :write-chan (:write-chan msg)
                                :msg msg}]
           (case (:type msg)
-            4 (go (>! fut-ch (future (handle-retrieve client-bindings))))))
+            4 (go (>! fut-ch (future (handle-retrieve client-bindings))))
+            6 (go (>! fut-ch (future (handle-invalidate client-bindings))))))
         ; poll! for a result of a command, error raised on dereference if the future errored
         (loop []
           (let [v (poll! fut-ch)]
