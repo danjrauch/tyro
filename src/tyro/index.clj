@@ -109,7 +109,7 @@
   "Invalidate file in all peers, then forward message to connected indexes."
   {:added "0.3.0"}
   [client-bindings]
-  (let [{:keys [f2p-index p2e-index] {:keys [file-name id host port write-chan]} :msg} client-bindings]
+  (let [{:keys [f2p-index p2e-index] {:keys [file-name id host port master write-chan]} :msg} client-bindings]
     (if (contains? @message-index id)
       (let [msg (assoc (:msg client-bindings)
                        :success true)
@@ -126,10 +126,9 @@
         ; Send back ACK to peer
         (>!! write-chan (.getBytes (prn-str msg)))
         ; Send invalidate message to peers
-        (doseq [peer-endpoint (map #(get @p2e-index %) (get @f2p-index file-name))
-                :when (or (not= host (:host peer-endpoint))
-                          (not= port (:port peer-endpoint)))]
-          (timbre/debug (str "HOST: " host ", EH: " (:host peer-endpoint) ", PORT: " port ", EP: " (:port peer-endpoint)))        
+        (doseq [peer-id (keys @p2e-index)
+                :when (not= master peer-id)
+                :let [peer-endpoint (get @p2e-index peer-id)]]
           (>!! (:ch peer-endpoint) {:type 6
                                     :file-name file-name})
           (timbre/debug (str "SENDING AN INVALIDATE REQUEST TO PORT: " (:port peer-endpoint)))

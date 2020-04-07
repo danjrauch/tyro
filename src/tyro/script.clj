@@ -61,8 +61,6 @@
       (let [peer-host (atom "")
             peer-port (atom -1)]
         (doseq [result @results]
-          (when (== (:type result) 3)
-            (timbre/debug (str "SEARCH COUNT: " (count (:endpoints result)))))
           (when (and (== (:type result) 3) (> (count (:endpoints result)) 0))
             (reset! peer-host (:host (nth (:endpoints result) 0)))
             (reset! peer-port (:port (nth (:endpoints result) 0)))
@@ -76,11 +74,11 @@
       (doseq [result @results]
         (when (== (:type result) 4)
           (timbre/debug (str "SAVING FILE: " (:file-name result)))
-          (peer/save-file (:file-name result) (:contents result))))
+          (peer/save-file (:file-name result) (:contents result) (:master result) (:ttr result))))
 
-      ; (when (== port 8001)
-      ;   (Thread/sleep 20000)
-      ;   (spit (str @peer/dir "/1.txt") (apply str (take 10000 (repeatedly #(char (+ (rand 26) 65))))))
-      ;   (Thread/sleep 5000))
+      (when (== port 8001)
+        (Thread/sleep 20000)
+        (spit (str @peer/dir "/1.txt") (apply str (take 10000 (repeatedly #(char (+ (rand 26) 65))))))
+        (Thread/sleep 5000))
       
       @results)))

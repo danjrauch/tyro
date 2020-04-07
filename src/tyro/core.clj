@@ -29,6 +29,7 @@
    ;; A non-idempotent option (:default is applied first)
    [nil "--repl" "REPL Mode for Peer"]
    [nil "--path PATH" "Path to the resource"]
+   [nil "--policy POLICY" "Consistency policy"]
    ["-i" "--id ID" "ID of the node"
     :parse-fn #(Integer/parseInt %)]
    ["-v" nil "Verbosity level"
@@ -83,7 +84,7 @@
 
   (let [opts (parse-opts args cli-options)
         required-args {:index [:port]
-                       :peer [:port :dir]
+                       :peer [:port :dir :policy]
                        :simulation [:path]
                        :run-config [:path :id]}]
     (cond
@@ -96,7 +97,8 @@
       (== (count (:arguments opts)) 1) (let [req-arg-pass (empty? (difference (set ((keyword (first (:arguments opts))) required-args))
                                                                               (set (keys (:options opts)))))
                                              port (:port (:options opts))
-                                             dir (:dir (:options opts))]
+                                             dir (:dir (:options opts))
+                                             policy (:policy (:options opts))]
                                          (case (first (:arguments opts))
                                            "index" (if req-arg-pass
                                                      (if (= (:repl (:options opts)) true)
@@ -108,12 +110,10 @@
                                            "peer" (if req-arg-pass
                                                     (if (= (:repl (:options opts)) true)
                                                       (do
-                                                        (thread (start-server peer/execute port dir))
+                                                        (thread (start-server peer/execute port dir policy))
                                                         (repl/start-repl "peer"))
-                                                      (start-server peer/execute port dir))
+                                                      (start-server peer/execute port dir policy))
                                                     (System/exit 0))
-                                           ; lein run simulation --path config/sim.edn
-                                           ; TODO run "pkill -f tyro" after sim
                                            "simulation" (if req-arg-pass
                                                           (let [config (tool/load-edn (:path (:options opts)))]
                                                             (println "Starting simulation.")
@@ -144,7 +144,7 @@
                                                               (doseq [peer-config (:leaves index-config)]
                                                                 (when (== (:id peer-config) id)
                                                                   (peer/set-index (:host index-config) (:port index-config))
-                                                                  (thread (start-server peer/execute (:port peer-config) (:dir peer-config)))
+                                                                  (thread (start-server peer/execute (:port peer-config) (:dir peer-config) (:policy peer-config)))
                                                                   (Thread/sleep 10000)
                                                                   (repl/run-script (:script peer-config) (:host peer-config) (:port peer-config))
                                                                   (Thread/sleep 200000)))))

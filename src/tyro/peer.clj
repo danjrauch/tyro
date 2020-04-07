@@ -14,6 +14,7 @@
 (def pid (ref -1))
 (def dir (ref ""))
 (def channel-map (ref {}))
+(def file-index (ref {}))
 (def file-history (ref []))
 (def my-host (ref ""))
 (def my-port (ref -1))
@@ -90,25 +91,31 @@
 (defn save-file
   "Write the file contents to the dir."
   {:added "0.1.0"}
-  [file-name contents]
+  [file-name contents & args]
   (let [file (io/file @dir "downloads" file-name)]
     (io/make-parents file)
-    (spit file contents)))
+    (spit file contents)
+    (when (not-empty args)
+      (dosync
+       (alter file-index assoc file-name {:master (nth args 0)
+                                          :ttr (+ (System/currentTimeMillis) (nth args 1))})))))
 
 (defn handle-retrieve
   "Download the file contents and put it on the write back channel."
   {:added "0.1.0"}
   [client-bindings]
-  (let [{:keys [file-name write-chan msg]} client-bindings]
-    (if (.exists (io/file @dir file-name))
-      (let [msg (assoc msg :contents (slurp (io/file @dir file-name)) :success true)
-            msg (dissoc msg :write-chan)]
-        (go (>! write-chan (.getBytes (prn-str msg))))
-        (str "RETURNED CONTENTS for file " file-name " to client"))
-      (let [msg (assoc msg :contents "" :success false)
-            msg (dissoc msg :write-chan)]
-        (go (>! write-chan (.getBytes (prn-str msg))))
-        (str "FILE " file-name " DOES NOT EXIST")))))
+  (let [{:keys [file-name write-chan msg]} client-bindings
+        exists (.exists (io/file @dir file-name))
+        msg (assoc msg
+                   :contents (if exists (slurp (io/file @dir file-name)) "")
+                   :master @pid
+                   :ttr 5000
+                   :success true)
+        msg (dissoc msg :write-chan)]
+    (go (>! write-chan (.getBytes (prn-str msg))))
+    (if exists
+      (str "RETURNED CONTENTS for file " file-name " to client")
+      (str "FILE " file-name " DOES NOT EXIST"))))
 
 (defn handle-invalidate
   "Delete an invalid file from the directory."
@@ -137,10 +144,10 @@
 (defn sync-dir
   "Synchronize contents of dir with the index."
   {:added "0.1.0"}
-  []
+  [policy]
   (loop []
     (when (and (not= @pid -1) (not= @dir ""))
-      (let [files (filter #(not (.isDirectory %)) (file-seq (io/file @dir)))
+      (let [files (filter #(not (.isDirectory %)) (seq (.listFiles (io/file @dir))))
             actual-file-names (map #(.getName %) files)
             historical-file-names (map :name @file-history)
             new-file-names (set/difference (set actual-file-names) (set historical-file-names))
@@ -160,22 +167,26 @@
 
         ; If an old file was modified since the last time we checked, 
         ; send an invalid message to the index, either in a lazy or eager way.
-        
-        ; (when (contains? @channel-map :index)
-        ;   (doseq [invalid-file-name invalid-file-names]
-        ;     ; send the invalid message to the index
-        ;     (>!! (:ch (:index @channel-map)) {:type 5
-        ;                                       :file-name invalid-file-name
-        ;                                       :host @my-host
-        ;                                       :port @my-port
-        ;                                       :id (str @pid (swap! message-count inc))}))
-        
-        ;   (when (not-empty invalid-file-names)
-        ;     (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
-        ;     (tool/connect-and-collect (:host (:index @channel-map))
-        ;                               (:port (:index @channel-map))
-        ;                               (:ch (:index @channel-map)))))
-        
+        (case policy
+          "push" (when (contains? @channel-map :index)
+                   (doseq [invalid-file-name invalid-file-names]
+                     ; send the invalid message to the index
+                     (>!! (:ch (:index @channel-map)) {:type 5
+                                                       :file-name invalid-file-name
+                                                       :host @my-host
+                                                       :port @my-port
+                                                       :master @pid
+                                                       :id (str @pid (swap! message-count inc))}))
+
+                   (when (not-empty invalid-file-names)
+                     (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
+                     (tool/connect-and-collect (:host (:index @channel-map))
+                                               (:port (:index @channel-map))
+                                               (:ch (:index @channel-map)))))
+          "peer-pull" (identity 1)
+          "index-pull" (identity 1)
+          (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
+
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)
                                                               :last-modified (.lastModified file)}))))))
     (Thread/sleep 3000)
@@ -195,7 +206,7 @@
     (thread (logger fut-ch))
 
     ; start a thread for directory syncing
-    (thread (sync-dir))
+    (thread (sync-dir (nth args 2)))
 
     (loop []
       ; take a message off the channel
