@@ -5,19 +5,19 @@
                     :host "127.0.0.1"
                     :port 8001
                     :dir "./data/peer1"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}
                    {:id 3
                     :host "127.0.0.1"
                     :port 8002
                     :dir "./data/peer2"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}
                    {:id 4
                     :host "127.0.0.1"
                     :port 8003
                     :dir "./data/peer3"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}]}
          {:id 1
           :host "127.0.0.1"
@@ -26,19 +26,19 @@
                     :host "127.0.0.1"
                     :port 8101
                     :dir "./data/peer4"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}
                    {:id 6
                     :host "127.0.0.1"
                     :port 8102
                     :dir "./data/peer5"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}
                    {:id 7
                     :host "127.0.0.1"
                     :port 8103
                     :dir "./data/peer6"
-                    :policy "push"
+                    :policy "peer-pull"
                     :script "stress-test"}]}]
  :connections {0 [1]
                1 [0]}}

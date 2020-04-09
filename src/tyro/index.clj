@@ -45,13 +45,15 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
+   (let [{:keys [p2f-index f2p-index file-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (when (not (contains? @f2p-index file-name))
        (alter f2p-index assoc file-name #{}))
      (when (not (contains? @p2f-index peer-id))
        (alter p2f-index assoc peer-id #{}))
      (alter f2p-index update file-name conj peer-id)
      (alter p2f-index update peer-id conj file-name)
+     (alter file-index assoc file-name {:master peer-id
+                                        :version 0})
      (let [msg (assoc (:msg client-bindings) :success true)
            msg (dissoc msg :write-chan)]
        (go (>! write-chan (.getBytes (prn-str msg)))))
@@ -62,15 +64,29 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
+   (let [{:keys [p2f-index f2p-index file-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (when (contains? @f2p-index file-name)
        (alter f2p-index update file-name disj peer-id))
      (when (contains? @p2f-index peer-id)
        (alter p2f-index update peer-id disj file-name))
+     (alter file-index dissoc file-name)
      (let [msg (assoc (:msg client-bindings) :success true)
            msg (dissoc msg :write-chan)]
        (go (>! write-chan (.getBytes (prn-str msg)))))
      (str "DEREGISTERED FILE " file-name " for ID: " peer-id))))
+
+(defn handle-versioning
+  "Set the version of a file for one of the peers in the file-index."
+  {:added "0.3.0"}
+  [client-bindings]
+  (dosync
+   (let [{:keys [file-index] {:keys [file-name version host port write-chan]} :msg} client-bindings
+         msg (assoc (:msg client-bindings) :success true)
+         msg (dissoc msg :write-chan)]
+     (when (contains? @file-index file-name)
+       (alter file-index assoc-in [file-name :version] version))
+     (go (>! write-chan (.getBytes (prn-str msg))))
+     (str "SET VERSION FOR FILE " file-name " TO " version))))
 
 (defn handle-search
   "Search the global index and return the endpoint map for peers with that file."
@@ -163,7 +179,8 @@
   (let [fut-ch (chan (dropping-buffer 10000))
         f2p-index (ref {})
         p2f-index (ref {})
-        p2e-index (ref {})]
+        p2e-index (ref {})
+        file-index (ref {})]
 
     ; start a logging thread
     (thread (logger fut-ch))
@@ -175,16 +192,18 @@
         (let [client-bindings {:p2f-index p2f-index
                                :f2p-index f2p-index
                                :p2e-index p2e-index
+                               :file-index file-index
                                :msg msg}]
           (case (:type msg)
             ; 0 (go (>! fut-ch (future (handle-registry client-bindings))))
             ; 1 (go (>! fut-ch (future (handle-register client-bindings))))
             ; 2 (go (>! fut-ch (future (handle-deregister client-bindings))))
             ; 3 (go (>! fut-ch (future (handle-search client-bindings))))
-
+            
             0 (timbre/debug (handle-registry client-bindings))
             1 (timbre/debug (handle-register client-bindings))
             2 (timbre/debug (handle-deregister client-bindings))
             3 (go (>! fut-ch (future (handle-search client-bindings))))
-            5 (go (>! fut-ch (future (handle-invalidate client-bindings)))))))
+            5 (go (>! fut-ch (future (handle-invalidate client-bindings))))
+            7 (go (>! fut-ch (future (handle-versioning client-bindings)))))))
       (recur))))

@@ -44,19 +44,30 @@
     false))
 
 (defn register
-  "Register a file with the index."
+  "Register a file with the index server and file-index."
   {:added "0.1.0"}
   [peer-id file-name]
   (if (and (contains? @channel-map :index) (not= @pid -1))
-    (>!! (:ch (:index @channel-map)) {:type 1 :peer-id peer-id :file-name file-name})
+    (do
+      (dosync
+       (alter file-index assoc file-name {:master @pid
+                                          :version 0}))
+      (>!! (:ch (:index @channel-map)) {:type 1
+                                        :peer-id peer-id
+                                        :file-name file-name}))
     false))
 
 (defn deregister
-  "Deregister a file with the index."
+  "Deregister a file with the index server and file-index."
   {:added "0.1.0"}
   [peer-id file-name]
   (if (and (contains? @channel-map :index) (not= @pid -1))
-    (>!! (:ch (:index @channel-map)) {:type 2 :peer-id peer-id :file-name file-name})
+    (do
+      (dosync
+       (alter file-index dissoc file-name))
+      (>!! (:ch (:index @channel-map)) {:type 2 
+                                        :peer-id peer-id 
+                                        :file-name file-name}))
     false))
 
 (defn search
@@ -76,9 +87,9 @@
   "Make a request to another peer for a file."
   {:added "0.1.0"}
   [host port file-name]
-  (let [[_ info] (first (filter (fn [[_, v]]
-                                  (and (= (:host v) host) (= (:port v) port)))
-                                @channel-map))]
+  (let [info (first (for [[_ v] @channel-map
+                          :when (and (= (:host v) host) (= (:port v) port))]
+                      v))]
     ; put a retrieve request on the peer's channel, register one if necessary
     (if (nil? info)
       (dosync
@@ -96,9 +107,14 @@
     (io/make-parents file)
     (spit file contents)
     (when (not-empty args)
-      (dosync
-       (alter file-index assoc file-name {:master (nth args 0)
-                                          :ttr (+ (System/currentTimeMillis) (nth args 1))})))))
+      (let [metadata-args (nth args 0)]
+        (dosync
+         (alter file-index assoc file-name {:master (:master metadata-args)
+                                            :refresh-interval (:refresh-interval metadata-args)
+                                            :ttr (+ (System/currentTimeMillis) (:refresh-interval metadata-args))
+                                            :version (:version metadata-args)
+                                            :host (:host metadata-args)
+                                            :port (:port metadata-args)}))))))
 
 (defn handle-retrieve
   "Download the file contents and put it on the write back channel."
@@ -109,13 +125,31 @@
         msg (assoc msg
                    :contents (if exists (slurp (io/file @dir file-name)) "")
                    :master @pid
-                   :ttr 5000
+                   :refresh-interval 3000
+                   :version (get-in @file-index [file-name :version])
+                   :host @my-host
+                   :port @my-port
                    :success true)
         msg (dissoc msg :write-chan)]
     (go (>! write-chan (.getBytes (prn-str msg))))
     (if exists
       (str "RETURNED CONTENTS for file " file-name " to client")
       (str "FILE " file-name " DOES NOT EXIST"))))
+
+(defn handle-version-check
+  "Return the current version information for a file in our directory."
+  {:added "0.3.0"}
+  [client-bindings]
+  (let [{:keys [file-name write-chan msg]} client-bindings
+        version (get-in @file-index [file-name :version])
+        msg (assoc msg
+                   :version version
+                   :success (not (nil? version)))
+        msg (dissoc msg :write-chan)]
+    (go (>! write-chan (.getBytes (prn-str msg))))
+    (if (not (nil? version))
+      (str "RETURNED VERSION " version " FOR FILE NAME: " file-name)
+      (str "COULD NOT FIND VERSION FOR FILE NAME: " file-name))))
 
 (defn handle-invalidate
   "Delete an invalid file from the directory."
@@ -165,9 +199,24 @@
         (doseq [d deleted-file-names]
           (deregister @pid d))
 
-        ; If an old file was modified since the last time we checked, 
-        ; send an invalid message to the index, either in a lazy or eager way.
+        ; give invalid files new version number
+        (doseq [invalid-file-name invalid-file-names]
+          (dosync
+           (alter file-index update-in [invalid-file-name :version] inc)
+           (when (contains? @channel-map :index)
+             (>!! (:ch (:index @channel-map)) {:type 7
+                                               :file-name invalid-file-name
+                                               :version (get-in @file-index [invalid-file-name :verison])
+                                               :host @my-host
+                                               :port @my-port})
+            ;;  (tool/connect-and-collect (:host (:index @channel-map))
+            ;;                            (:port (:index @channel-map))
+            ;;                            (:ch (:index @channel-map)))
+             )))
+
         (case policy
+          ; If an old file was modified since the last time we checked, 
+          ; send an invalid message to the index, either in a lazy or eager way.
           "push" (when (contains? @channel-map :index)
                    (doseq [invalid-file-name invalid-file-names]
                      ; send the invalid message to the index
@@ -175,7 +224,7 @@
                                                        :file-name invalid-file-name
                                                        :host @my-host
                                                        :port @my-port
-                                                       :master @pid
+                                                       :master @pid ; (get-in @file-index [invalid-file-name :master])
                                                        :id (str @pid (swap! message-count inc))}))
 
                    (when (not-empty invalid-file-names)
@@ -183,7 +232,23 @@
                      (tool/connect-and-collect (:host (:index @channel-map))
                                                (:port (:index @channel-map))
                                                (:ch (:index @channel-map)))))
-          "peer-pull" (identity 1)
+          "peer-pull" (doseq [[file-name metadata] @file-index]
+                        (when (and (not (nil? (:ttr metadata))) (< (:ttr metadata) (System/currentTimeMillis)))
+                          (let [peer-endpoint-kw (keyword (str (:host metadata) ":" (:port metadata)))
+                                peer-ch (get-in @channel-map [peer-endpoint-kw :ch])]
+                            (>!! peer-ch {:type 8
+                                          :file-name file-name})
+                            (doseq [result (tool/connect-and-collect (:host metadata)
+                                                                     (:port metadata)
+                                                                     peer-ch)]
+                              (when (or (not (:success result)) (< (:version metadata) (:version result)))
+                                (let [file (io/file @dir "downloads" file-name)
+                                      success (and (.exists file) (io/delete-file file))]
+                                  (if success
+                                    (dosync
+                                     (alter file-index dissoc file-name)
+                                     (timbre/debug (str "DELETED FILE " file-name)))
+                                    (timbre/debug (str "FILE " file-name " DOES NOT EXIST OR COULD NOT BE DELETED")))))))))
           "index-pull" (identity 1)
           (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
 
@@ -217,7 +282,8 @@
                                :msg msg}]
           (case (:type msg)
             4 (go (>! fut-ch (future (handle-retrieve client-bindings))))
-            6 (go (>! fut-ch (future (handle-invalidate client-bindings))))))
+            6 (go (>! fut-ch (future (handle-invalidate client-bindings))))
+            8 (go (>! fut-ch (future (handle-version-check client-bindings))))))
         ; poll! for a result of a command, error raised on dereference if the future errored
         (loop []
           (let [v (poll! fut-ch)]

@@ -24,7 +24,7 @@
         (dosync (ref-set peer/pid (:peer-id result)))))
 
     (let [pid @peer/pid
-          files (filter #(not (.isDirectory %)) (file-seq (io/file @peer/dir)))
+          files (filter #(not (.isDirectory %)) (seq (.listFiles (io/file @peer/dir))))
           file-names (map #(.getName %) files)]
       ; register and deregister the files in our directory
       ; (doseq [file-name file-names]
@@ -74,7 +74,11 @@
       (doseq [result @results]
         (when (== (:type result) 4)
           (timbre/debug (str "SAVING FILE: " (:file-name result)))
-          (peer/save-file (:file-name result) (:contents result) (:master result) (:ttr result))))
+          (peer/save-file (:file-name result) (:contents result) {:master (:master result)
+                                                                  :refresh-interval (:refresh-interval result)
+                                                                  :version (:version result)
+                                                                  :host (:host result)
+                                                                  :port (:port result)})))
 
       (when (== port 8001)
         (Thread/sleep 20000)
