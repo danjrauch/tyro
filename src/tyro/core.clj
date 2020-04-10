@@ -71,7 +71,7 @@
   (println (:summary opts))
   (println)
   (println "index -p PORT [--repl]")
-  (println "peer -p PORT -d DIR [--repl]")
+  (println "peer -p PORT -d DIR --policy POLICY [--repl]")
   (println "run-config --path PATH --id ID")
   (println))
 
@@ -139,7 +139,8 @@
                                                                     ; (timbre/debug (str "ADDED ID: " con-id " TO ID: " id "'s PEER LIST"))
                                                                     (ind/add (:host con-map) (:port con-map))))
                                                                 (thread (start-server ind/execute (:port index-config)))
-                                                                (Thread/sleep 200000))
+                                                                (Thread/sleep 170000)
+                                                                (System/exit 0))
 
                                                               (doseq [peer-config (:leaves index-config)]
                                                                 (when (== (:id peer-config) id)
@@ -147,7 +148,8 @@
                                                                   (thread (start-server peer/execute (:port peer-config) (:dir peer-config) (:policy peer-config)))
                                                                   (Thread/sleep 10000)
                                                                   (repl/run-script (:script peer-config) (:host peer-config) (:port peer-config))
-                                                                  (Thread/sleep 200000)))))
+                                                                  (Thread/sleep 170000)
+                                                                  (System/exit 0)))))
                                                           (System/exit 0))
                                            (println " Command doesn't exist")))
       :else (do (println)

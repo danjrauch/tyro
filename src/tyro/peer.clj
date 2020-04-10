@@ -16,9 +16,9 @@
 (def channel-map (ref {}))
 (def file-index (ref {}))
 (def file-history (ref []))
+(def message-count (atom -1))
 (def my-host (ref ""))
 (def my-port (ref -1))
-(def message-count (atom -1))
 
 (defn set-index
   "Set the endpoint of the index.
@@ -155,9 +155,11 @@
   "Delete an invalid file from the directory."
   {:added "0.3.0"}
   [client-bindings]
-  (let [{:keys [file-name write-chan msg]} client-bindings
+  (let [{:keys [file-name version write-chan msg]} client-bindings
         file (io/file @dir "downloads" file-name)
-        success (and (.exists file) (io/delete-file file))
+        version-check (or (nil? version)
+                          (< (get-in @file-index [file-name :version]) version))
+        success (and version-check (.exists file) (io/delete-file file))
         msg (assoc msg :success success)
         msg (dissoc msg :write-chan)]
     (go (>! write-chan (.getBytes (prn-str msg))))
@@ -206,7 +208,7 @@
            (when (contains? @channel-map :index)
              (>!! (:ch (:index @channel-map)) {:type 7
                                                :file-name invalid-file-name
-                                               :version (get-in @file-index [invalid-file-name :verison])
+                                               :version (get-in @file-index [invalid-file-name :version])
                                                :host @my-host
                                                :port @my-port})
             ;;  (tool/connect-and-collect (:host (:index @channel-map))
@@ -249,12 +251,16 @@
                                      (alter file-index dissoc file-name)
                                      (timbre/debug (str "DELETED FILE " file-name)))
                                     (timbre/debug (str "FILE " file-name " DOES NOT EXIST OR COULD NOT BE DELETED")))))))))
-          "index-pull" (identity 1)
+          "index-pull" (when (contains? @channel-map :index)
+                         (>!! (:ch (:index @channel-map)) {:type 9})
+                         (tool/connect-and-collect (:host (:index @channel-map))
+                                                   (:port (:index @channel-map))
+                                                   (:ch (:index @channel-map))))
           (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
 
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)
                                                               :last-modified (.lastModified file)}))))))
-    (Thread/sleep 3000)
+    (Thread/sleep 5000)
     (recur)))
 
 (defn execute

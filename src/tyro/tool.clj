@@ -11,6 +11,8 @@
                      spy get-env]])
   (:import (java.net NetworkInterface)))
 
+(def connect-event-loop (event-loop))
+
 (defn load-edn
   "Load edn from an io/reader source (filename or io/resource)."
   {:added "0.2.0"}
@@ -43,7 +45,7 @@
   "Connect to a server and return the results"
   {:added "0.1.0"}
   [host port message-ch]
-  (let [client (connect (event-loop) {:host host :port port})
+  (let [client (connect connect-event-loop {:host host :port port})
         n (loop [i 0]
             (let [v (poll! message-ch)]
               (if (nil? v)
@@ -58,7 +60,10 @@
       (loop [results []
              i 0]
         (if (== i n)
-          results
+          (do
+            (close! (:write-chan client))
+            (reset! (:sockets connect-event-loop) #{})
+            results)
           (let [read (<!! (:read-chan client))
                 response (loop []
                            (if (not (keyword? read))
