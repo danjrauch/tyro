@@ -53,13 +53,13 @@ Vagrant.configure("2") do |config|
     vb.gui = false
   
     # Customize the amount of memory on the VM:
-    vb.memory = "6000"
+    vb.memory = "2048"
     vb.cpus = 4
   end
 
-  # config.vm.provider "libvirt" do |lv|
-  #   lv.memory = "6000"
-  # end
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = "2048"
+  end
 
   #
   # View the documentation for the provider you are using for more
