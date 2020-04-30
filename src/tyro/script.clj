@@ -1,6 +1,7 @@
 (ns tyro.script
   (:require [tyro.index :as ind]
             [tyro.peer :as peer]
+            [tyro.crypto :as crypto]
             [tyro.tool :as tool]
             [clojure.java.io :as io]
             [taoensso.timbre :as timbre
@@ -41,11 +42,11 @@
                                 (:port (:index @peer/channel-map))
                                 (:ch (:index @peer/channel-map)))
 
-      (dotimes [_ 10]
+      (dotimes [_ 1]
 
         (reset! results [])
 
-        (when (some #{port} [8002 8003 8101 8102 8103])
+        (when (some #{port} [8001 8002 8003 8101 8102 8103])
           (peer/search "1.txt")
 
           (swap! results into (tool/connect-and-collect (:host (:index @peer/channel-map))
@@ -64,7 +65,7 @@
 
                 (reset! peer-host (:host (first (:endpoints result))))
                 (reset! peer-port (:port (first (:endpoints result))))
-                (peer/retrieve @peer-host @peer-port (:file-name result))
+                (peer/retrieve @peer-host @peer-port (:public-kp (first (:endpoints result))) (:file-name result))
 
                 (swap! results into (tool/connect-and-collect @peer-host
                                                               @peer-port
@@ -72,12 +73,15 @@
 
           (doseq [result @results]
             (when (== (:type result) 4)
+              ;; (let [result (crypto/decrypt result @peer/private-key (:n @peer/key-pair))]
               (timbre/debug (str "SAVING FILE: " (:file-name result)))
               (peer/save-file (:file-name result) (:contents result) {:master (:master result)
                                                                       :refresh-interval (:refresh-interval result)
                                                                       :version (:version result)
                                                                       :host (:host result)
-                                                                      :port (:port result)}))))
+                                                                      :port (:port result)})
+                ;; )
+              )))
 
         (Thread/sleep 500)
         (when (== port 8001)

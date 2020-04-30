@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.edn :as edn]
+            [tyro.crypto :as crypto]
             [net.async.tcp :refer [event-loop connect accept]]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
@@ -53,26 +54,23 @@
                 (do
                   (>!! (:write-chan client)
                        (.getBytes (prn-str (assoc v :time (System/currentTimeMillis)))))
-                  (recur (inc i))))))
-        check (<!! (:read-chan client))]
-    (if (= :connected check)
-      ; TODO just put results on a result-ch
-      (loop [results []
-             i 0]
-        (if (== i n)
-          (do
-            (close! (:write-chan client))
-            (reset! (:sockets connect-event-loop) #{})
-            results)
-          (let [read (<!! (:read-chan client))
-                response (loop []
-                           (if (not (keyword? read))
-                             (let [res (edn/read-string (String. read))]
-                               (assoc res :time (- (System/currentTimeMillis) (:time res))))
-                             (when (and (keyword? read) (not= :connected read))
-                               (recur))))]
-            (recur (conj results response) (inc i)))))
-      [{:type -1 :connection-error true :host host :port port}])))
+                  (recur (inc i))))))]
+    (while (not= :connected (<!! (:read-chan client))))
+    (loop [results []
+           i 0]
+      (if (== i n)
+        (do
+          (close! (:write-chan client))
+          (reset! (:sockets connect-event-loop) #{})
+          results)
+        (let [read (<!! (:read-chan client))
+              response (loop []
+                         (if (not (keyword? read))
+                           (let [res (edn/read-string (String. read))]
+                             (assoc res :time (- (System/currentTimeMillis) (:time res))))
+                           (when (and (keyword? read) (not= :connected read))
+                             (recur))))]
+          (recur (conj results response) (inc i)))))))
 
 (defn calculate-stats
   {:added "0.1.0"}

@@ -72,6 +72,7 @@
   (println)
   (println "index -p PORT [--repl]")
   (println "peer -p PORT -d DIR --policy POLICY [--repl]")
+  (println "simulation --path PATH")
   (println "run-config --path PATH --id ID")
   (println))
 

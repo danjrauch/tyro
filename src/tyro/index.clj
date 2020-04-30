@@ -1,7 +1,8 @@
 (ns tyro.index
   (:require [clojure.core.async :refer [<!! <! >! >!! go alts!! thread poll! timeout dropping-buffer chan]]
-            [tyro.tool :as tool]
             [clojure.math.numeric-tower :as math]
+            [tyro.crypto :as crypto]
+            [tyro.tool :as tool]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
                      logf tracef debugf infof warnf errorf fatalf reportf
@@ -13,6 +14,9 @@
 (def message-count (atom -1))
 (def my-host (ref ""))
 (def my-port (ref -1))
+(def key-pair (crypto/generate-rsa-keypair))
+(def public-kp (dissoc key-pair :d))
+(def private-key (:d key-pair))
 
 (defn add
   "Add an index to the index's peer list."
@@ -23,12 +27,40 @@
      (when (not (contains? @channel-map endpoint-keyword))
        (alter channel-map assoc endpoint-keyword {:host host :port port :ch (chan (dropping-buffer 10000))})))))
 
+(defn save-public-kp
+  "Ask an index for its public keypair."
+  {:added "0.4.0"}
+  [host port]
+  (dosync
+   (let [endpoint-keyword (keyword (str host ":" port))
+         ch (chan 1)]
+     (when (contains? @channel-map endpoint-keyword)
+       (>!! ch {:type 10 :public-kp public-kp})
+       (let [result (first (tool/connect-and-collect host port ch))]
+         (if (and (:success result) (== (:type result) 10))
+           (do
+             (alter channel-map assoc-in [endpoint-keyword :public-kp] (:public-kp result))
+             (timbre/debug (str "SAVED PUBLIC KEYPAIR FOR " host ":" port)))
+           (timbre/debug (str "COULD NOT FIND PUBLIC KEYPAIR FOR " host ":" port))))))))
+
+(defn handle-public-kp-query
+  "Hand over our public keypair."
+  {:added "0.4.0"}
+  [client-bindings]
+  (let [{:keys [] {:keys [write-chan]} :msg} client-bindings
+        msg (assoc (:msg client-bindings)
+                   :public-kp public-kp
+                   :success true)
+        msg (dissoc msg :write-chan)]
+    (>!! write-chan (.getBytes (prn-str msg)))
+    (str "RETURNED PUBLIC KEY")))
+
 (defn handle-registry
   "Return unique peer ID. Peer needs to remember this number."
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index p2e-index] {:keys [host port write-chan]} :msg} client-bindings
+   (let [{:keys [p2f-index p2e-index] {:keys [host port public-kp write-chan]} :msg} client-bindings
          possible-peer (for [[k v] @p2e-index
                              :when (and (= host (:host v)) (= port (:port v)))]
                          k)
@@ -38,8 +70,9 @@
      (alter p2f-index assoc peer-id #{})
      (alter p2e-index assoc peer-id {:host host
                                      :port port
+                                     :public-kp public-kp
                                      :ch (chan (dropping-buffer 10000))})
-     (let [msg (assoc (:msg client-bindings) :peer-id peer-id :success true)
+     (let [msg (assoc (:msg client-bindings) :peer-id peer-id :public-kp public-kp :success true)
            msg (dissoc msg :write-chan)]
        (go (>! write-chan (.getBytes (prn-str msg)))))
      (str "REGISTERED PEER " host " on port " port " with ID: " peer-id))))
@@ -226,6 +259,11 @@
      (ref-set my-host "127.0.0.1")
      (ref-set my-port (nth args 0)))
 
+    (thread
+      (doseq [endpoint (vals @channel-map)]
+        (save-public-kp (:host endpoint) (:port endpoint))
+        (timbre/debug (str "NEW PUB KEY: " (get-in @channel-map [(keyword (str (:host endpoint) ":" (:port endpoint))) :public-kp])))))
+
     ; start a logging thread
     (thread (logger fut-ch))
 
@@ -244,5 +282,6 @@
             3 (go (>! fut-ch (future (handle-search client-bindings))))
             5 (go (>! fut-ch (future (handle-invalidate client-bindings))))
             7 (go (>! fut-ch (future (handle-versioning client-bindings))))
-            9 (go (>! fut-ch (future (handle-index-pull client-bindings)))))))
+            9 (go (>! fut-ch (future (handle-index-pull client-bindings))))
+            10 (go (>! fut-ch (future (handle-public-kp-query client-bindings)))))))
       (recur))))

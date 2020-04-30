@@ -5,6 +5,7 @@
             [clojure.set :as set]
             [clojure.edn :as edn]
             [net.async.tcp :refer [event-loop connect accept]]
+            [tyro.crypto :as crypto]
             [tyro.tool :as tool]
             [taoensso.timbre :as timbre
              :refer [log  trace  debug  info  warn  error  fatal  report
@@ -19,6 +20,9 @@
 (def message-count (atom -1))
 (def my-host (ref ""))
 (def my-port (ref -1))
+(def key-pair (crypto/generate-rsa-keypair))
+(def public-kp (dissoc key-pair :d))
+(def private-key (:d key-pair))
 
 (defn set-index
   "Set the endpoint of the index.
@@ -40,7 +44,7 @@
   {:added "0.1.0"}
   [host port]
   (if (contains? @channel-map :index)
-    (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port})
+    (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port :public-kp public-kp})
     false))
 
 (defn register
@@ -86,18 +90,19 @@
 (defn retrieve
   "Make a request to another peer for a file."
   {:added "0.1.0"}
-  [host port file-name]
+  [host port target-public-kp file-name]
   (let [info (first (for [[_ v] @channel-map
                           :when (and (= (:host v) host) (= (:port v) port))]
-                      v))]
+                      v))
+        msg (crypto/encrypt {:type 4 :file-name file-name :public-kp public-kp} target-public-kp (:block-size target-public-kp))]
     ; put a retrieve request on the peer's channel, register one if necessary
     (if (nil? info)
       (dosync
        (alter channel-map assoc (keyword (str host ":" port)) {:host host
                                                                :port port
                                                                :ch (chan (dropping-buffer 10000))})
-       (>!! (:ch ((keyword (str host ":" port)) @channel-map)) {:type 4 :file-name file-name}))
-      (>!! (:ch info) {:type 4 :file-name file-name}))))
+       (>!! (:ch ((keyword (str host ":" port)) @channel-map)) msg))
+      (>!! (:ch info) msg))))
 
 (defn save-file
   "Write the file contents to the dir."
@@ -131,6 +136,7 @@
                    :port @my-port
                    :success true)
         msg (dissoc msg :write-chan)]
+    ; (crypto/encrypt msg (:public-kp msg) (:block-size (:public-kp msg)))
     (go (>! write-chan (.getBytes (prn-str msg))))
     (if exists
       (str "RETURNED CONTENTS for file " file-name " to client")
@@ -211,53 +217,51 @@
                                                :version (get-in @file-index [invalid-file-name :version])
                                                :host @my-host
                                                :port @my-port})
-            ;;  (tool/connect-and-collect (:host (:index @channel-map))
-            ;;                            (:port (:index @channel-map))
-            ;;                            (:ch (:index @channel-map)))
              )))
 
-        (case policy
-          ; If an old file was modified since the last time we checked, 
-          ; send an invalid message to the index, either in a lazy or eager way.
-          "push" (when (contains? @channel-map :index)
-                   (doseq [invalid-file-name invalid-file-names]
-                     ; send the invalid message to the index
-                     (>!! (:ch (:index @channel-map)) {:type 5
-                                                       :file-name invalid-file-name
-                                                       :host @my-host
-                                                       :port @my-port
-                                                       :master @pid ; (get-in @file-index [invalid-file-name :master])
-                                                       :id (str @pid (swap! message-count inc))}))
-
-                   (when (not-empty invalid-file-names)
-                     (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
-                     (tool/connect-and-collect (:host (:index @channel-map))
-                                               (:port (:index @channel-map))
-                                               (:ch (:index @channel-map)))))
-          "peer-pull" (doseq [[file-name metadata] @file-index]
-                        (when (and (not (nil? (:ttr metadata))) (< (:ttr metadata) (System/currentTimeMillis)))
-                          (let [peer-endpoint-kw (keyword (str (:host metadata) ":" (:port metadata)))
-                                peer-ch (get-in @channel-map [peer-endpoint-kw :ch])]
-                            (>!! peer-ch {:type 8
-                                          :file-name file-name})
-                            (doseq [result (tool/connect-and-collect (:host metadata)
-                                                                     (:port metadata)
-                                                                     peer-ch)]
-                              (when (or (not (:success result)) (< (:version metadata) (:version result)))
-                                (let [file (io/file @dir "downloads" file-name)
-                                      success (and (.exists file) (io/delete-file file))]
-                                  (if success
-                                    (dosync
-                                     (alter file-index dissoc file-name)
-                                     (timbre/debug (str "DELETED FILE " file-name)))
-                                    (timbre/debug (str "FILE " file-name " DOES NOT EXIST OR COULD NOT BE DELETED")))))))))
-          "index-pull" (when (contains? @channel-map :index)
-                         (>!! (:ch (:index @channel-map)) {:type 9})
-                         (tool/connect-and-collect (:host (:index @channel-map))
-                                                   (:port (:index @channel-map))
-                                                   (:ch (:index @channel-map))))
-          (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
-
+        ; TODO Add consistency back in
+        ;; (case policy
+        ;;   ; If an old file was modified since the last time we checked, 
+        ;;   ; send an invalid message to the index, either in a lazy or eager way.
+        ;;   "push" (when (contains? @channel-map :index)
+        ;;            (doseq [invalid-file-name invalid-file-names]
+        ;;              ; send the invalid message to the index
+        ;;              (>!! (:ch (:index @channel-map)) {:type 5
+        ;;                                                :file-name invalid-file-name
+        ;;                                                :host @my-host
+        ;;                                                :port @my-port
+        ;;                                                :master @pid ; (get-in @file-index [invalid-file-name :master])
+        ;;                                                :id (str @pid (swap! message-count inc))}))
+        
+        ;;            (when (not-empty invalid-file-names)
+        ;;              (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
+        ;;              (tool/connect-and-collect (:host (:index @channel-map))
+        ;;                                        (:port (:index @channel-map))
+        ;;                                        (:ch (:index @channel-map)))))
+        ;;   "peer-pull" (doseq [[file-name metadata] @file-index]
+        ;;                 (when (and (not (nil? (:ttr metadata))) (< (:ttr metadata) (System/currentTimeMillis)))
+        ;;                   (let [peer-endpoint-kw (keyword (str (:host metadata) ":" (:port metadata)))
+        ;;                         peer-ch (get-in @channel-map [peer-endpoint-kw :ch])]
+        ;;                     (>!! peer-ch {:type 8
+        ;;                                   :file-name file-name})
+        ;;                     (doseq [result (tool/connect-and-collect (:host metadata)
+        ;;                                                              (:port metadata)
+        ;;                                                              peer-ch)]
+        ;;                       (when (or (not (:success result)) (< (:version metadata) (:version result)))
+        ;;                         (let [file (io/file @dir "downloads" file-name)
+        ;;                               success (and (.exists file) (io/delete-file file))]
+        ;;                           (if success
+        ;;                             (dosync
+        ;;                              (alter file-index dissoc file-name)
+        ;;                              (timbre/debug (str "DELETED FILE " file-name)))
+        ;;                             (timbre/debug (str "FILE " file-name " DOES NOT EXIST OR COULD NOT BE DELETED")))))))))
+        ;;   "index-pull" (when (contains? @channel-map :index)
+        ;;                  (>!! (:ch (:index @channel-map)) {:type 9})
+        ;;                  (tool/connect-and-collect (:host (:index @channel-map))
+        ;;                                            (:port (:index @channel-map))
+        ;;                                            (:ch (:index @channel-map))))
+        ;;   (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
+        
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)
                                                               :last-modified (.lastModified file)}))))))
     (Thread/sleep 5000)
@@ -283,7 +287,12 @@
       ; take a message off the channel
       (when-let [msg (<!! ch)]
         ; execute it in a future and put the future on the future channel
-        (let [client-bindings {:file-name (:file-name msg)
+        ; TODO do the message decomposition in core?
+        (let [time (:time msg)
+              write-chan (:write-chan msg)
+              msg (crypto/decrypt (dissoc msg :time :write-chan) private-key (:n key-pair))
+              msg (assoc msg :time time :write-chan write-chan)
+              client-bindings {:file-name (:file-name msg)
                                :write-chan (:write-chan msg)
                                :msg msg}]
           (case (:type msg)

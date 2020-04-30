@@ -140,6 +140,11 @@
       public-kp (dissoc whole-kp :d)
       private-key (:d whole-kp)
       plain {:time 1586479272529, :type 3, :port 8100, :host "127.0.0.1", :ttl 1, :success true, :id "I40", :file-name ".DS_Store"}
-      cypher (encrypt plain public-kp (:block-size whole-kp))
+      cypher (encrypt plain public-kp (:block-size public-kp))
       decypher (decrypt cypher private-key (:n whole-kp))]
   decypher)
+
+(let [cypher {0 240059982906633545748425936156N, 7 10795711369200399131271460900N, 1 116239426630159719004394060104N, 4 26783796991144353152925634938N, 6 177324462324592318281817477483N, 3 61719847572397334811190449980N, 2 301100204294376624515891889781N, 5 167938864209130777906862299750N, 8 207662158087728074009338379014N}
+      private-key 229564912996267250456359545115
+      n 344347369494402049311443784691]
+  (decrypt cypher private-key n))
