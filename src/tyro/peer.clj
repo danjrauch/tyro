@@ -20,9 +20,9 @@
 (def message-count (atom -1))
 (def my-host (ref ""))
 (def my-port (ref -1))
-(def key-pair (crypto/generate-rsa-keypair))
-(def public-kp (dissoc key-pair :d))
-(def private-key (:d key-pair))
+(def my-key-pair (crypto/generate-rsa-keypair))
+(def my-public-kp (dissoc my-key-pair :d))
+(def my-private-key (:d my-key-pair))
 
 (defn set-index
   "Set the endpoint of the index.
@@ -31,7 +31,7 @@
   [host port]
   (if (contains? @channel-map :index)
     (let [info (:index @channel-map)
-          results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
+          results (tool/connect-and-collect (:host info) (:port info) (:ch info) my-key-pair)]
       (dosync
        (alter channel-map assoc :index {:host host :port port :ch (chan (dropping-buffer 10000))})
        results))
@@ -44,7 +44,7 @@
   {:added "0.1.0"}
   [host port]
   (if (contains? @channel-map :index)
-    (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port :public-kp public-kp})
+    (>!! (:ch (:index @channel-map)) {:type 0 :host host :port port :public-kp my-public-kp})
     false))
 
 (defn register
@@ -56,9 +56,11 @@
       (dosync
        (alter file-index assoc file-name {:master @pid
                                           :version 0}))
-      (>!! (:ch (:index @channel-map)) {:type 1
-                                        :peer-id peer-id
-                                        :file-name file-name}))
+      (>!! (:ch (:index @channel-map)) (crypto/encrypt {:type 1
+                                                        :peer-id peer-id
+                                                        :file-name file-name}
+                                                       (get-in @channel-map [:index :public-kp]) 
+                                                       (get-in @channel-map [:index :public-kp :block-size]))))
     false))
 
 (defn deregister
@@ -69,9 +71,11 @@
     (do
       (dosync
        (alter file-index dissoc file-name))
-      (>!! (:ch (:index @channel-map)) {:type 2 
-                                        :peer-id peer-id 
-                                        :file-name file-name}))
+      (>!! (:ch (:index @channel-map)) (crypto/encrypt {:type 2
+                                                        :peer-id peer-id
+                                                        :file-name file-name}
+                                                       (get-in @channel-map [:index :public-kp])
+                                                       (get-in @channel-map [:index :public-kp :block-size]))))
     false))
 
 (defn search
@@ -79,12 +83,14 @@
   {:added "0.1.0"}
   [file-name]
   (if (and (contains? @channel-map :index) (not= @pid -1))
-    (>!! (:ch (:index @channel-map)) {:type 3
-                                      :file-name file-name
-                                      :host @my-host
-                                      :port @my-port
-                                      :ttl 3
-                                      :id (str @pid (swap! message-count inc))})
+    (>!! (:ch (:index @channel-map)) (crypto/encrypt {:type 3
+                                                      :file-name file-name
+                                                      :host @my-host
+                                                      :port @my-port
+                                                      :ttl 3
+                                                      :id (str @pid (swap! message-count inc))}
+                                                     (get-in @channel-map [:index :public-kp])
+                                                     (get-in @channel-map [:index :public-kp :block-size])))
     false))
 
 (defn retrieve
@@ -94,12 +100,13 @@
   (let [info (first (for [[_ v] @channel-map
                           :when (and (= (:host v) host) (= (:port v) port))]
                       v))
-        msg (crypto/encrypt {:type 4 :file-name file-name :public-kp public-kp} target-public-kp (:block-size target-public-kp))]
+        msg (crypto/encrypt {:type 4 :file-name file-name :public-kp my-public-kp} target-public-kp (:block-size target-public-kp))]
     ; put a retrieve request on the peer's channel, register one if necessary
     (if (nil? info)
       (dosync
        (alter channel-map assoc (keyword (str host ":" port)) {:host host
                                                                :port port
+                                                               :public-kp target-public-kp
                                                                :ch (chan (dropping-buffer 10000))})
        (>!! (:ch ((keyword (str host ":" port)) @channel-map)) msg))
       (>!! (:ch info) msg))))
@@ -136,8 +143,7 @@
                    :port @my-port
                    :success true)
         msg (dissoc msg :write-chan)]
-    ; (crypto/encrypt msg (:public-kp msg) (:block-size (:public-kp msg)))
-    (go (>! write-chan (.getBytes (prn-str msg))))
+    (go (>! write-chan (.getBytes (prn-str (crypto/encrypt msg (:public-kp msg) (:block-size (:public-kp msg)))))))
     (if exists
       (str "RETURNED CONTENTS for file " file-name " to client")
       (str "FILE " file-name " DOES NOT EXIST"))))
@@ -232,12 +238,13 @@
         ;;                                                :port @my-port
         ;;                                                :master @pid ; (get-in @file-index [invalid-file-name :master])
         ;;                                                :id (str @pid (swap! message-count inc))}))
-        
+
         ;;            (when (not-empty invalid-file-names)
         ;;              (timbre/debug (str "SENDING INVALIDATE MESSAGE TO INDEX FROM PEER with PORT: " @my-port))
         ;;              (tool/connect-and-collect (:host (:index @channel-map))
         ;;                                        (:port (:index @channel-map))
-        ;;                                        (:ch (:index @channel-map)))))
+        ;;                                        (:ch (:index @channel-map)
+        ;;                                        my-key-pair))))
         ;;   "peer-pull" (doseq [[file-name metadata] @file-index]
         ;;                 (when (and (not (nil? (:ttr metadata))) (< (:ttr metadata) (System/currentTimeMillis)))
         ;;                   (let [peer-endpoint-kw (keyword (str (:host metadata) ":" (:port metadata)))
@@ -246,7 +253,8 @@
         ;;                                   :file-name file-name})
         ;;                     (doseq [result (tool/connect-and-collect (:host metadata)
         ;;                                                              (:port metadata)
-        ;;                                                              peer-ch)]
+        ;;                                                              peer-ch
+        ;;                                                              my-key-pair)]
         ;;                       (when (or (not (:success result)) (< (:version metadata) (:version result)))
         ;;                         (let [file (io/file @dir "downloads" file-name)
         ;;                               success (and (.exists file) (io/delete-file file))]
@@ -259,7 +267,8 @@
         ;;                  (>!! (:ch (:index @channel-map)) {:type 9})
         ;;                  (tool/connect-and-collect (:host (:index @channel-map))
         ;;                                            (:port (:index @channel-map))
-        ;;                                            (:ch (:index @channel-map))))
+        ;;                                            (:ch (:index @channel-map))
+        ;;                                            my-key-pair))
         ;;   (timbre/debug (str "NO CONSISTENCY POLICY SET FOR PEER ID: " @pid)))
         
         (dosync (ref-set file-history (vec (for [file files] {:name (.getName file)
@@ -287,10 +296,11 @@
       ; take a message off the channel
       (when-let [msg (<!! ch)]
         ; execute it in a future and put the future on the future channel
-        ; TODO do the message decomposition in core?
         (let [time (:time msg)
               write-chan (:write-chan msg)
-              msg (crypto/decrypt (dissoc msg :time :write-chan) private-key (:n key-pair))
+              msg (if (some? (:type msg))
+                    msg
+                    (crypto/decrypt (dissoc msg :time :write-chan) my-private-key (:n my-key-pair)))
               msg (assoc msg :time time :write-chan write-chan)
               client-bindings {:file-name (:file-name msg)
                                :write-chan (:write-chan msg)

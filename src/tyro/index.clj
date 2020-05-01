@@ -14,9 +14,9 @@
 (def message-count (atom -1))
 (def my-host (ref ""))
 (def my-port (ref -1))
-(def key-pair (crypto/generate-rsa-keypair))
-(def public-kp (dissoc key-pair :d))
-(def private-key (:d key-pair))
+(def my-key-pair (crypto/generate-rsa-keypair))
+(def my-public-kp (dissoc my-key-pair :d))
+(def my-private-key (:d my-key-pair))
 
 (defn add
   "Add an index to the index's peer list."
@@ -35,8 +35,8 @@
    (let [endpoint-keyword (keyword (str host ":" port))
          ch (chan 1)]
      (when (contains? @channel-map endpoint-keyword)
-       (>!! ch {:type 10 :public-kp public-kp})
-       (let [result (first (tool/connect-and-collect host port ch))]
+       (>!! ch {:type 10 :public-kp my-public-kp})
+       (let [result (first (tool/connect-and-collect host port ch my-key-pair))]
          (if (and (:success result) (== (:type result) 10))
            (do
              (alter channel-map assoc-in [endpoint-keyword :public-kp] (:public-kp result))
@@ -49,7 +49,7 @@
   [client-bindings]
   (let [{:keys [] {:keys [write-chan]} :msg} client-bindings
         msg (assoc (:msg client-bindings)
-                   :public-kp public-kp
+                   :public-kp my-public-kp
                    :success true)
         msg (dissoc msg :write-chan)]
     (>!! write-chan (.getBytes (prn-str msg)))
@@ -72,9 +72,9 @@
                                      :port port
                                      :public-kp public-kp
                                      :ch (chan (dropping-buffer 10000))})
-     (let [msg (assoc (:msg client-bindings) :peer-id peer-id :public-kp public-kp :success true)
+     (let [msg (assoc (:msg client-bindings) :peer-id peer-id :public-kp my-public-kp :success true)
            msg (dissoc msg :write-chan)]
-       (go (>! write-chan (.getBytes (prn-str msg)))))
+       (go (>! write-chan (.getBytes (prn-str (crypto/encrypt msg public-kp (:block-size public-kp)))))))
      (str "REGISTERED PEER " host " on port " port " with ID: " peer-id))))
 
 (defn handle-register
@@ -82,7 +82,7 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
+   (let [{:keys [p2f-index p2e-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (when (not (contains? @f2p-index file-name))
        (alter f2p-index assoc file-name #{}))
      (when (not (contains? @p2f-index peer-id))
@@ -92,8 +92,9 @@
      (alter file-index assoc file-name {:master peer-id
                                         :version 0})
      (let [msg (assoc (:msg client-bindings) :success true)
-           msg (dissoc msg :write-chan)]
-       (go (>! write-chan (.getBytes (prn-str msg)))))
+           msg (dissoc msg :write-chan)
+           peer-public-kp (get-in @p2e-index [peer-id :public-kp])]
+       (go (>! write-chan (.getBytes (prn-str (crypto/encrypt msg peer-public-kp (:block-size peer-public-kp)))))))
      (str "REGISTERED FILE " file-name " for ID: " peer-id))))
 
 (defn handle-deregister
@@ -101,15 +102,16 @@
   {:added "0.1.0"}
   [client-bindings]
   (dosync
-   (let [{:keys [p2f-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
+   (let [{:keys [p2f-index p2e-index f2p-index] {:keys [peer-id file-name write-chan]} :msg} client-bindings]
      (when (contains? @f2p-index file-name)
        (alter f2p-index update file-name disj peer-id))
      (when (contains? @p2f-index peer-id)
        (alter p2f-index update peer-id disj file-name))
      (alter file-index dissoc file-name)
      (let [msg (assoc (:msg client-bindings) :success true)
-           msg (dissoc msg :write-chan)]
-       (go (>! write-chan (.getBytes (prn-str msg)))))
+           msg (dissoc msg :write-chan)
+           peer-public-kp (get-in @p2e-index [peer-id :public-kp])]
+       (go (>! write-chan (.getBytes (prn-str (crypto/encrypt msg peer-public-kp (:block-size peer-public-kp)))))))
      (str "DEREGISTERED FILE " file-name " for ID: " peer-id))))
 
 (defn handle-versioning
@@ -157,9 +159,9 @@
          (alter message-index assoc id (System/currentTimeMillis)))
         (when (pos? ttl)
           (doseq [con-index (vals @channel-map)]
-            (>!! (:ch con-index) msg)
+            (>!! (:ch con-index) (crypto/encrypt msg (:public-kp con-index) (:block-size (:public-kp con-index))))
             (timbre/debug (str "FORWARDING A SEARCH REQUEST WITH ID: " id " to PORT: " (:port con-index)))
-            (doseq [result (tool/connect-and-collect (:host con-index) (:port con-index) (:ch con-index))]
+            (doseq [result (tool/connect-and-collect (:host con-index) (:port con-index) (:ch con-index) my-key-pair)]
               (swap! results into (:endpoints result)))))
         ; add master/version info for index-pull consistency 
         (doseq [result @results]
@@ -196,14 +198,14 @@
           (>!! (:ch peer-endpoint) {:type 6
                                     :file-name file-name})
           (timbre/debug (str "SENDING AN INVALIDATE REQUEST TO PORT: " (:port peer-endpoint)))
-          (tool/connect-and-collect (:host peer-endpoint) (:port peer-endpoint) (:ch peer-endpoint)))
+          (tool/connect-and-collect (:host peer-endpoint) (:port peer-endpoint) (:ch peer-endpoint) my-key-pair))
         ; Deregister the file in the local indexes
         ; (handle-deregister )
         ; Forward message to connected indexes
         (doseq [con-index (vals @channel-map)]
           (>!! (:ch con-index) msg)
           (timbre/debug (str "FORWARDING AN INVALIDATE REQUEST WITH ID: " id " to PORT: " (:port con-index)))
-          (tool/connect-and-collect (:host con-index) (:port con-index) (:ch con-index)))
+          (tool/connect-and-collect (:host con-index) (:port con-index) (:ch con-index) my-key-pair))
         (str "INVALIDATED FILE " file-name " ON ALL PEERS")))))
 
 (defn handle-index-pull
@@ -220,13 +222,13 @@
                :ttl 3
                :id (str "I" (swap! message-count inc))}))
     ; send a search message to ourselves
-    (doseq [result (tool/connect-and-collect @my-host @my-port ch)
+    (doseq [result (tool/connect-and-collect @my-host @my-port ch my-key-pair)
             peer-endpoint (vals @p2e-index)]
       (when (:hit result)
         (>!! (:ch peer-endpoint) {:type 6
                                   :file-name (:file-name result)
                                   :version (:version (first (:endpoints result)))})
-        (tool/connect-and-collect (:host peer-endpoint) (:port peer-endpoint) (:ch peer-endpoint))))
+        (tool/connect-and-collect (:host peer-endpoint) (:port peer-endpoint) (:ch peer-endpoint) my-key-pair)))
     (let [msg (assoc (:msg client-bindings)
                      :success true)
           msg (dissoc msg :write-chan)]
@@ -271,7 +273,13 @@
       ; take a message off the channel
       (when-let [msg (<!! ch)]
         ; execute it in a future and put the future on the future channel
-        (let [client-bindings {:p2f-index p2f-index
+        (let [time (:time msg)
+              write-chan (:write-chan msg)
+              msg (if (some? (:type msg))
+                    msg
+                    (crypto/decrypt (dissoc msg :time :write-chan) my-private-key (:n my-key-pair)))
+              msg (assoc msg :time time :write-chan write-chan)
+              client-bindings {:p2f-index p2f-index
                                :f2p-index f2p-index
                                :p2e-index p2e-index
                                :msg msg}]

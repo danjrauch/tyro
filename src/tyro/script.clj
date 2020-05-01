@@ -19,12 +19,15 @@
 
   (let [results (atom (tool/connect-and-collect (:host (:index @peer/channel-map))
                                                 (:port (:index @peer/channel-map))
-                                                (:ch (:index @peer/channel-map))))
+                                                (:ch (:index @peer/channel-map))
+                                                peer/my-key-pair))
         num-searches (atom 0)
         num-invalid-results (atom 0)]
     (doseq [result @results]
       (when (== (:type result) 0)
-        (dosync (ref-set peer/pid (:peer-id result)))))
+        (dosync (ref-set peer/pid (:peer-id result))
+                ; TODO move to connect-and-collect
+                (alter peer/channel-map assoc-in [:index :public-kp] (:public-kp result)))))
 
     (let [pid @peer/pid
           files (filter #(not (.isDirectory %)) (seq (.listFiles (io/file @peer/dir))))
@@ -40,7 +43,8 @@
 
       (tool/connect-and-collect (:host (:index @peer/channel-map))
                                 (:port (:index @peer/channel-map))
-                                (:ch (:index @peer/channel-map)))
+                                (:ch (:index @peer/channel-map))
+                                peer/my-key-pair)
 
       (dotimes [_ 1]
 
@@ -51,7 +55,8 @@
 
           (swap! results into (tool/connect-and-collect (:host (:index @peer/channel-map))
                                                         (:port (:index @peer/channel-map))
-                                                        (:ch (:index @peer/channel-map))))
+                                                        (:ch (:index @peer/channel-map))
+                                                        peer/my-key-pair))
 
           (let [peer-host (atom "")
                 peer-port (atom -1)]
@@ -69,11 +74,12 @@
 
                 (swap! results into (tool/connect-and-collect @peer-host
                                                               @peer-port
-                                                              (:ch ((keyword (str @peer-host ":" @peer-port)) @peer/channel-map)))))))
+                                                              (:ch ((keyword (str @peer-host ":" @peer-port)) @peer/channel-map))
+                                                              peer/my-key-pair)))))
 
           (doseq [result @results]
             (when (== (:type result) 4)
-              ;; (let [result (crypto/decrypt result @peer/private-key (:n @peer/key-pair))]
+              ;; (let [result (crypto/decrypt result @peer/my-private-key (:n @peer/my-key-pair))]
               (timbre/debug (str "SAVING FILE: " (:file-name result)))
               (peer/save-file (:file-name result) (:contents result) {:master (:master result)
                                                                       :refresh-interval (:refresh-interval result)

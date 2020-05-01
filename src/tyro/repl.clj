@@ -246,7 +246,7 @@
       all-results
       (let [point (keyword (first points))
             info (point channel-map)
-            results (tool/connect-and-collect (:host info) (:port info) (:ch info))]
+            results (tool/connect-and-collect (:host info) (:port info) (:ch info) peer/my-key-pair)]
         (recur (rest points) (into all-results results))))))
 
 (defn execute-command
@@ -311,7 +311,7 @@
                                          "exec" (do
                                                   (when (not silent)
                                                     (println ""))
-                                                  (doseq [res (get-results (keys @peer/channel-map) @peer/channel-map)]
+                                                  (doseq [res (get-results (keys @peer/channel-map) @peer/channel-map )]
                                                     (when (== (:type res) 0)
                                                       (dosync (ref-set peer/pid (:peer-id res))))
                                                     (when (and (not silent) (== (:type res) 4))

@@ -45,7 +45,7 @@
 (defn connect-and-collect
   "Connect to a server and return the results"
   {:added "0.1.0"}
-  [host port message-ch]
+  [host port message-ch key-pair]
   (let [client (connect connect-event-loop {:host host :port port})
         n (loop [i 0]
             (let [v (poll! message-ch)]
@@ -66,7 +66,10 @@
         (let [read (<!! (:read-chan client))
               response (loop []
                          (if (not (keyword? read))
-                           (let [res (edn/read-string (String. read))]
+                           (let [res (edn/read-string (String. read))
+                                 res (if (some? (:type res))
+                                       res
+                                       (crypto/decrypt res (:d key-pair) (:n key-pair)))]
                              (assoc res :time (- (System/currentTimeMillis) (:time res))))
                            (when (and (keyword? read) (not= :connected read))
                              (recur))))]
